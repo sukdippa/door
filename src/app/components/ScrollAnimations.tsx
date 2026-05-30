@@ -15,6 +15,10 @@ export default function ScrollAnimations() {
       const introImages = gsap.utils.toArray<HTMLElement>(
         "[data-gsap='intro-image']"
       );
+      const heroCard = document.querySelector<HTMLElement>(
+        "[data-gsap='hero-card']"
+      );
+      const heroSection = document.getElementById("door-hero");
 
       if (introOverlay) {
         gsap.set(introImages, { autoAlpha: 0, y: 8 });
@@ -35,6 +39,39 @@ export default function ScrollAnimations() {
               stagger: 0.08,
             },
             "-=0.2"
+          );
+      }
+
+      if (heroCard && heroSection) {
+        gsap.set(heroCard, { autoAlpha: 0, y: 24 });
+        gsap
+          .timeline({
+            scrollTrigger: {
+              trigger: heroSection,
+              start: "top top",
+              end: "+=220%",
+              scrub: true,
+            },
+          })
+          .to(
+            heroCard,
+            {
+              autoAlpha: 1,
+              y: 0,
+              duration: 0.2,
+              ease: "power2.out",
+            },
+            0.8
+          )
+          .to(
+            introImages,
+            {
+              autoAlpha: 0,
+              y: -6,
+              duration: 0.2,
+              ease: "power2.out",
+            },
+            0.8
           );
       }
 
