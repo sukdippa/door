@@ -5,6 +5,7 @@ import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import * as THREE from "three";
+const HERO_SCROLL_DISTANCE = "+=460%";
 
 type HeroSceneProps = {
   modelUrl: string;
@@ -94,7 +95,7 @@ export default function HeroScene({
             scrollTrigger: {
               trigger: triggerElement,
               start: "top top",
-              end: "+=220%",
+              end: HERO_SCROLL_DISTANCE,
               scrub: 1,
               pin: true,
               anticipatePin: 1,

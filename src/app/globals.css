@@ -45,3 +45,44 @@ h3 {
   background: color-mix(in srgb, var(--accent) 45%, transparent);
   color: #081018;
 }
+
+@keyframes loading-scroll {
+  0% {
+    transform: translate(-50%, -10px);
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  75% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, 36px);
+    opacity: 0;
+  }
+}
+
+.loading-scroll {
+  animation: loading-scroll 1.4s ease-in-out infinite;
+}
+
+.hero-reveal {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+  will-change: opacity, transform;
+}
+
+.hero-reveal--welcome {
+  transition-delay: 0.15s;
+}
+
+.hero-reveal--title {
+  transition-delay: 0.3s;
+}
+
+[data-hero-loaded="true"] .hero-reveal {
+  opacity: 1;
+  transform: translateY(0);
+}
