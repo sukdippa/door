@@ -22,7 +22,7 @@ const CAMERA_FAR = 100;
 const CAMERA_START_OFFSET_Z = 2.5;
 const CAMERA_END_OFFSET_Z = 8.5;
 const HERO_SCROLL_DISTANCE = "+=460%";
-const FOG_COLOR = "#a2a2b1";
+const FOG_COLOR = "#7cc3ec";
 const FOG_NEAR = 3.5;
 const FOG_FAR = 15.5;
 const PARALLAX_STRENGTH = 0.22;
@@ -99,7 +99,7 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   useEffect(() => {
     hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
     scene.environment = hdrTexture;
-    scene.background = hdrTexture;
+    scene.background = null; //set to hdrTexture for the actual image in the sky (skybox). this will prevent you from seeing underneath tho
     const intensityScene = scene as unknown as {
       backgroundIntensity: number;
       environmentIntensity: number;
@@ -227,18 +227,19 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
     <>
       <directionalLight
         ref={sunLightRef}
-        intensity={2.2}
+        intensity={3.7}
         position={[3, 8, 3]}
         castShadow
+        color="#feebeb"
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
         shadow-bias={-0.0001}
         shadow-normalBias={0.005}
-        shadow-radius={3}
+        shadow-radius={10}
       />
       <pointLight
         color="#dfdeef"
-        intensity={1}
+        intensity={0}
         distance={20}
         decay={2}
         position={[0, 0.6, 1]}
@@ -249,34 +250,22 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
       </mesh>
       {!hasSceneLights && <ambientLight intensity={0.35} />}
       <group ref={parallaxGroupRef}>
+        {/* Clouds are rendered as part of the parallax group to give them a subtle parallax effect. 
         <group ref={cloudsRef} renderOrder={-1}>
           <Clouds material={THREE.MeshLambertMaterial} position={[0, -3, 2]}>
             <Cloud bounds={[2.5, 0.6, 1]} position={[-2.2, 0.3, 0]} seed={1} speed={0} />
             <Cloud bounds={[2.2, 0.5, 1]} position={[1.1, 0.8, 0.2]} seed={2} speed={0} />
             <Cloud bounds={[1.6, 0.4, 1]} position={[0.2, 0.55, -0.4]} seed={3} speed={0} />
           </Clouds>
-        </group>
+        </group>*/}
         <primitive object={gltfScene} />
       </group>
       <EffectComposer enableNormalPass>
-        {sunMesh ? (
-          <GodRays
-            sun={sunMesh}
-            exposure={0.25}
-            decay={0.92}
-            blur
-            density={0.95}
-            weight={0.6}
-            samples={48}
-          />
-        ) : (
-          <></>
-        )}
         <Bloom
           luminanceThreshold={0.8}
           luminanceSmoothing={0}
           mipmapBlur
-          intensity={1.2}
+          intensity={1.8}
         />
       </EffectComposer>
     </>

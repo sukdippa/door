@@ -38,7 +38,7 @@ export default function HeroLoadingOverlay({ className = "" }: HeroLoadingOverla
 
   return (
     <div
-      className={`pointer-events-none absolute inset-0 z-[120] flex items-center justify-center bg-linear-to-b from-[#dbb5b5] to-[#bbceeb] text-white transition-opacity duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+      className={`pointer-events-none absolute inset-0 z-[120] flex items-center justify-center bg-linear-to-b from-[#3fa9eb] to-[#bbceeb] text-white transition-opacity duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
         isLoaded ? "opacity-0" : "opacity-100"
       } ${className}`}
       aria-hidden="true"
