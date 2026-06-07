@@ -67,9 +67,9 @@ export default function HeroScene({
 
     loader.load(
       modelUrl,
-      (gltf) => {
+      (gltf: { scene: any; }) => {
         const root = gltf.scene;
-        root.traverse((child) => {
+        root.traverse((child: { castShadow: boolean; receiveShadow: boolean; }) => {
           if (child instanceof THREE.Mesh) {
             child.castShadow = true;
             child.receiveShadow = true;
@@ -120,7 +120,7 @@ export default function HeroScene({
         }
       },
       undefined,
-      (error) => {
+      (error: any) => {
         console.error("Failed to load GLB:", error);
       }
     );

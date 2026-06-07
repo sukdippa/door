@@ -38,7 +38,7 @@ export default function HeroLoadingOverlay({ className = "" }: HeroLoadingOverla
 
   return (
     <div
-      className={`pointer-events-none absolute inset-0 z-[120] flex items-center justify-center bg-linear-to-b from-[#3fa9eb] to-[#bbceeb] text-white transition-opacity duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+      className={`pointer-events-none absolute inset-0 z-120 flex items-center justify-center bg-linear-to-b from-[#3fa9eb] to-[#bbceeb] text-white transition-opacity duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
         isLoaded ? "opacity-0" : "opacity-100"
       } ${className}`}
       aria-hidden="true"
@@ -47,8 +47,8 @@ export default function HeroLoadingOverlay({ className = "" }: HeroLoadingOverla
         <div className="text-[0.65rem] uppercase tracking-[0.45em] text-white/70">
           Loading
         </div>
-        <div className="relative h-10 w-[2px] overflow-hidden rounded-full bg-white/20">
-          <div className="loading-scroll absolute left-1/2 top-0 h-4 w-[2px] -translate-x-1/2 rounded-full bg-white/80" />
+        <div className="relative h-10 w-0.5 overflow-hidden rounded-full bg-white/20">
+          <div className="loading-scroll absolute left-1/2 top-0 h-4 w-0.5 -translate-x-1/2 rounded-full bg-white/80" />
         </div>
       </div>
     </div>
