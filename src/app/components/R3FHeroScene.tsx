@@ -250,14 +250,13 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
       </mesh>
       {!hasSceneLights && <ambientLight intensity={0.35} />}
       <group ref={parallaxGroupRef}>
-        {/* Clouds are rendered as part of the parallax group to give them a subtle parallax effect. 
         <group ref={cloudsRef} renderOrder={-1}>
           <Clouds material={THREE.MeshLambertMaterial} position={[0, -3, 2]}>
             <Cloud bounds={[2.5, 0.6, 1]} position={[-2.2, 0.3, 0]} seed={1} speed={0} />
             <Cloud bounds={[2.2, 0.5, 1]} position={[1.1, 0.8, 0.2]} seed={2} speed={0} />
             <Cloud bounds={[1.6, 0.4, 1]} position={[0.2, 0.55, -0.4]} seed={3} speed={0} />
           </Clouds>
-        </group>*/}
+        </group>
         <primitive object={gltfScene} />
       </group>
       <EffectComposer enableNormalPass>
