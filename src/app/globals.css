@@ -14,6 +14,37 @@
   --font-sans: var(--font-body);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
+  --font-redhat: var(--font-red-hat);
+}
+
+/* Design glow effects (Red Hat Display hero, per Figma) */
+.text-glow-white {
+  text-shadow: 0 0 7.7px rgba(255, 255, 255, 0.75);
+}
+
+.text-glow-blue {
+  text-shadow: 0 0 11.9px #5ba1cf;
+}
+
+/* Frosted-glass pill (navbar + Register button, per Figma) */
+.glass-pill {
+  background-color: rgba(39, 59, 94, 0.4);
+  border: 1px solid #adadad;
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    /* inner top highlight + lit-glass edge */
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 8px rgba(91, 161, 207, 0.14);
+}
+
+/* Register button: outer drop shadow + glow appears only on hover */
+.glass-button:hover {
+  box-shadow:
+    0 10px 30px rgba(9, 20, 40, 0.35),
+    0 0 24px rgba(91, 161, 207, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 8px rgba(91, 161, 207, 0.14);
 }
 
 @media (prefers-color-scheme: dark) {

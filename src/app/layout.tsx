@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
-import { DM_Mono, Space_Grotesk, Syne } from "next/font/google";
+import { DM_Mono, Red_Hat_Display, Space_Grotesk, Syne } from "next/font/google";
 import "./globals.css";
 
 const display = Syne({
   variable: "--font-display",
   subsets: ["latin"],
   weight: ["600", "700", "800"],
+});
+
+const redHat = Red_Hat_Display({
+  variable: "--font-red-hat",
+  subsets: ["latin"],
+  weight: ["400", "500", "700"],
 });
 
 const body = Space_Grotesk({
@@ -33,7 +39,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${display.variable} ${body.variable} ${mono.variable} h-full antialiased`}
+      className={`${display.variable} ${body.variable} ${mono.variable} ${redHat.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

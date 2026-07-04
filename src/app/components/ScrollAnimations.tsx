@@ -83,7 +83,9 @@ export default function ScrollAnimations() {
             },
             0.8
           );
+      }
 
+      if (heroSection) {
         gsap.to(introImages, {
           autoAlpha: 0,
           y: -6,
