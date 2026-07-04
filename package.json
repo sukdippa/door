@@ -7,13 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "optimize:glb": "gltf-transform optimize public/door.glb public/door.glb --compress draco --texture-compress webp --join-named false"
+    "optimize:glb": "gltf-transform optimize public/door.glb public/door.glb --compress draco --texture-compress webp --join-named false && node scripts/fix-foliage-alpha.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "@react-three/postprocessing": "^3.0.4",
     "gsap": "^3.15.0",
+    "leva": "^0.10.1",
     "lottie-web": "^5.13.0",
     "next": "16.2.6",
     "postprocessing": "^6.37.7",
@@ -28,6 +29,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.184.1",
+    "draco3dgltf": "^1.5.7",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",

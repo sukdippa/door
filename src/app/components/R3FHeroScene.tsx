@@ -1,11 +1,12 @@
 "use client";
 
 import * as THREE from "three";
-import { useEffect, useRef, Suspense, useState } from "react";
+import { useEffect, useMemo, useRef, Suspense, useState } from "react";
 import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
 import { Cloud, Clouds, useGLTF } from "@react-three/drei";
 import { EffectComposer, Bloom, GodRays } from "@react-three/postprocessing";
 import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
+import { useControls } from "leva";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 
@@ -27,9 +28,211 @@ const FOG_NEAR = 3.5;
 const FOG_FAR = 15.5;
 const PARALLAX_STRENGTH = 0.22;
 const PARALLAX_LERP = 0.08;
+const MAX_LEAVES = 24; // InstancedMesh capacity; leva count slider caps at this
+
+type Leaf = {
+  x: number;
+  z: number;
+  y: number;
+  phase: number;
+  swayFreq: number;
+  swayAmp: number;
+  fallMul: number;
+  scaleMul: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  spinX: number;
+  spinY: number;
+  spinZ: number;
+};
+
+type FallingLeavesProps = {
+  texture: THREE.Texture;
+  region: THREE.Box3;
+  scrollProgressRef: React.RefObject<number>;
+};
+
+// Sparse falling-leaves particle system: one InstancedMesh of alpha-tested
+// quads, animated per-instance in a single useFrame. Because the canvas uses
+// frameloop="demand", it invalidates each active frame and stops (letting the
+// loop rest) once the hero has been scrolled past.
+function FallingLeaves({ texture, region, scrollProgressRef }: FallingLeavesProps) {
+  const { invalidate } = useThree();
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  const ctl = useControls("Falling Leaves", {
+    enabled: true,
+    count: { value: 15, min: 0, max: 24, step: 1 },
+    fallSpeed: { value: 0.75, min: 0.05, max: 2, step: 0.01 },
+    sway: { value: 0.50, min: 0, max: 1, step: 0.01 },
+    size: { value: 0.10, min: 0.02, max: 0.6, step: 0.01 },
+    spin: { value: 2.50, min: 0, max: 4, step: 0.05 },
+    position: { value: { x: 0, y: 5, z: 0 }, step: 0.1 },
+  });
+
+  const geometry = useMemo(() => {
+    const g = new THREE.PlaneGeometry(1, 1);
+    // Per-instance opacity, driven each frame for the fade-out.
+    g.setAttribute(
+      "aOpacity",
+      new THREE.InstancedBufferAttribute(new Float32Array(MAX_LEAVES).fill(1), 1)
+    );
+    return g;
+  }, []);
+  const material = useMemo(() => {
+    const m = new THREE.MeshStandardMaterial({
+      map: texture,
+      alphaTest: 0.5, // keeps the leaf cutout crisp
+      transparent: true, // needed so the per-instance fade takes effect
+      depthWrite: true,
+      side: THREE.DoubleSide,
+      roughness: 0.85,
+      metalness: 0,
+    });
+    // Inject the per-instance opacity: alphaTest still discards outside the leaf
+    // shape, then we multiply the final alpha by aOpacity for the fade.
+    m.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nattribute float aOpacity;\nvarying float vLeafOpacity;"
+        )
+        .replace(
+          "#include <begin_vertex>",
+          "#include <begin_vertex>\nvLeafOpacity = aOpacity;"
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying float vLeafOpacity;"
+        )
+        .replace(
+          "#include <opaque_fragment>",
+          "#include <opaque_fragment>\ngl_FragColor.a *= vLeafOpacity;"
+        );
+    };
+    return m;
+  }, [texture]);
+
+  const spawn = useMemo(() => {
+    const { min, max } = region;
+    const topY = max.y + 0.3;
+    // Fall ~4x the tree height before respawning at the top.
+    const fallDistance = (Math.max(max.y - min.y, 1) + 0.5) * 4;
+    return {
+      minX: min.x,
+      width: Math.max(max.x - min.x, 0.5),
+      minZ: min.z - 0.2,
+      depth: Math.max(max.z - min.z, 0.3) + 0.4,
+      topY,
+      floorY: topY - fallDistance,
+      fallDistance,
+    };
+  }, [region]);
+
+  const leaves = useMemo<Leaf[]>(() => {
+    const rangeY = spawn.topY - spawn.floorY;
+    return Array.from({ length: ctl.count }, () => ({
+      x: spawn.minX + Math.random() * spawn.width,
+      z: spawn.minZ + Math.random() * spawn.depth,
+      y: spawn.topY - Math.random() * rangeY,
+      phase: Math.random() * Math.PI * 2,
+      swayFreq: 0.5 + Math.random(),
+      swayAmp: 0.5 + Math.random() * 0.8,
+      fallMul: 0.7 + Math.random() * 0.6,
+      scaleMul: 0.7 + Math.random() * 0.6,
+      rx: Math.random() * Math.PI * 2,
+      ry: Math.random() * Math.PI * 2,
+      rz: Math.random() * Math.PI * 2,
+      spinX: (Math.random() - 0.5) * 1.2,
+      spinY: (Math.random() - 0.5) * 1.2,
+      spinZ: (Math.random() - 0.5) * 0.8,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctl.count, spawn]);
+
+  // Fade in briefly at the top (no pop on respawn) and out near the bottom.
+  const opacityFor = useMemo(() => {
+    return (y: number) => {
+      const p = (y - spawn.floorY) / spawn.fallDistance; // 0 at floor .. 1 at top
+      return Math.min(
+        THREE.MathUtils.clamp(p / 0.25, 0, 1),
+        THREE.MathUtils.clamp((1 - p) / 0.08, 0, 1)
+      );
+    };
+  }, [spawn]);
+
+  // Seed initial matrices/opacity so nothing flashes at the origin or full alpha.
+  useEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    mesh.count = leaves.length;
+    const opacityAttr = mesh.geometry.getAttribute("aOpacity") as THREE.InstancedBufferAttribute;
+    leaves.forEach((l, i) => {
+      dummy.position.set(l.x, l.y, l.z);
+      dummy.rotation.set(l.rx, l.ry, l.rz);
+      dummy.scale.setScalar(ctl.size * l.scaleMul);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      opacityAttr.setX(i, opacityFor(l.y));
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    opacityAttr.needsUpdate = true;
+    invalidate();
+  }, [leaves, dummy, ctl.size, opacityFor, invalidate]);
+
+  useFrame((state, delta) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    // Only run during the hero; once scrolled past, stop (camera has moved
+    // through the door anyway) so the demand loop can idle.
+    const active = ctl.enabled && scrollProgressRef.current < 0.92;
+    if (mesh.visible !== active) mesh.visible = active;
+    if (!active) return;
+
+    const dt = Math.min(delta, 0.05); // clamp after idle gaps
+    const t = state.clock.elapsedTime;
+    const opacityAttr = mesh.geometry.getAttribute("aOpacity") as THREE.InstancedBufferAttribute;
+    for (let i = 0; i < leaves.length; i++) {
+      const l = leaves[i];
+      l.y -= ctl.fallSpeed * l.fallMul * dt;
+      if (l.y < spawn.floorY) {
+        l.y = spawn.topY;
+        l.x = spawn.minX + Math.random() * spawn.width;
+        l.z = spawn.minZ + Math.random() * spawn.depth;
+      }
+      const swayX = Math.sin(t * l.swayFreq + l.phase) * ctl.sway * l.swayAmp;
+      const swayZ = Math.cos(t * l.swayFreq * 0.8 + l.phase) * ctl.sway * l.swayAmp * 0.5;
+      dummy.position.set(l.x + swayX, l.y, l.z + swayZ);
+      dummy.rotation.set(
+        l.rx + t * l.spinX * ctl.spin,
+        l.ry + t * l.spinY * ctl.spin,
+        l.rz + t * l.spinZ * ctl.spin
+      );
+      dummy.scale.setScalar(ctl.size * l.scaleMul);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      opacityAttr.setX(i, opacityFor(l.y));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    opacityAttr.needsUpdate = true;
+    invalidate();
+  });
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={[geometry, material, MAX_LEAVES]}
+      position={[ctl.position.x, ctl.position.y, ctl.position.z]}
+      frustumCulled={false}
+    />
+  );
+}
 
 function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroSceneProps) {
-  const { camera, invalidate, scene } = useThree();
+  const { camera, invalidate, scene, gl } = useThree();
   const { scene: gltfScene, cameras } = useGLTF(modelUrl);
   const [hasSceneLights, setHasSceneLights] = useState(false);
   const cloudsRef = useRef<THREE.Group | null>(null);
@@ -44,6 +247,50 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   const doorClosedYRef = useRef(0);
   const cameraEndPositionRef = useRef(new THREE.Vector3());
   const timelineRef = useRef<gsap.core.Timeline | null>(null);
+  const cloudSpeedRef = useRef(0);
+  const scrollProgressRef = useRef(0);
+  const [leafData, setLeafData] = useState<{
+    texture: THREE.Texture | null;
+    region: THREE.Box3 | null;
+  }>({ texture: null, region: null });
+
+  // ---- Debug control panel (leva) ------------------------------------------
+  const fogCtl = useControls("Fog", {
+    enabled: true,
+    color: FOG_COLOR,
+    near: { value: FOG_NEAR, min: 0, max: 30, step: 0.1 },
+    far: { value: FOG_FAR, min: 0, max: 60, step: 0.1 },
+  });
+
+  const cloudCtl = useControls("Clouds", {
+    visible: true,
+    opacity: { value: 0.2, min: 0, max: 1, step: 0.01 },
+    speed: { value: 0, min: 0, max: 2, step: 0.01 },
+    color: "#ffffff",
+    position: { value: { x: 0, y: -3, z: 2 }, step: 0.1 },
+  });
+
+  const lightCtl = useControls("Sun Light", {
+    intensity: { value: 3.7, min: 0, max: 12, step: 0.1 },
+    color: "#feebeb",
+    position: { value: { x: 3, y: 8, z: 3 }, step: 0.1 },
+  });
+
+  const ambientCtl = useControls("Ambient Light", {
+    intensity: { value: 0.35, min: 0, max: 3, step: 0.01 },
+  });
+
+  const bloomCtl = useControls("Bloom", {
+    intensity: { value: 1.8, min: 0, max: 6, step: 0.1 },
+    luminanceThreshold: { value: 0.8, min: 0, max: 1, step: 0.01 },
+    mipmapBlur: true,
+  });
+
+  const envCtl = useControls("Environment", {
+    environmentIntensity: { value: 0.12, min: 0, max: 3, step: 0.01 },
+    backgroundIntensity: { value: 1.0, min: 0, max: 3, step: 0.01 },
+    exposure: { value: 1.0, min: 0, max: 3, step: 0.01 },
+  });
 
   useEffect(() => {
     const glbCamera = cameras[0];
@@ -70,13 +317,31 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
     camera.updateProjectionMatrix();
 
     let hasLight = false;
+    let leafTexture: THREE.Texture | null = null;
     gltfScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = true;
         child.receiveShadow = true;
-        if (child.material instanceof THREE.MeshStandardMaterial) {
-          child.material.envMapIntensity = 1;
-        }
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        materials.forEach((mat) => {
+          if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+          mat.envMapIntensity = 1;
+          // Foliage cards (grass/leaves/flowers) are exported as alphaMode BLEND,
+          // which disables depth writes and sorts whole planes by centroid — so a
+          // card behind can paint over one in front. Convert them to alpha-tested
+          // (alpha clip): writes depth + discards per-pixel, giving correct order.
+          if (mat.transparent && mat.map) {
+            mat.transparent = false;
+            mat.alphaTest = 0.5;
+            mat.depthWrite = true;
+            mat.needsUpdate = true;
+          }
+          // Grab the single-leaf texture off the tree's "leaf bush" material to
+          // reuse for the falling-leaves particles (keeps the art consistent).
+          if (!leafTexture && mat.map && /bush/i.test(mat.name)) {
+            leafTexture = mat.map;
+          }
+        });
       }
       if (child instanceof THREE.Light) {
         hasLight = true;
@@ -93,6 +358,19 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
       console.warn("door_inner mesh not found in GLB.");
     }
 
+    // Spawn volume for falling leaves = combined bounds of the front trees.
+    gltfScene.updateMatrixWorld(true);
+    const region = new THREE.Box3();
+    let hasRegion = false;
+    ["tree", "tree.001"].forEach((name) => {
+      const node = gltfScene.getObjectByName(name);
+      if (node) {
+        region.expandByObject(node);
+        hasRegion = true;
+      }
+    });
+    setLeafData({ texture: leafTexture, region: hasRegion ? region : null });
+
     invalidate();
   }, [gltfScene, invalidate, cameras, camera]);
 
@@ -100,24 +378,37 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
     hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
     scene.environment = hdrTexture;
     scene.background = null; //set to hdrTexture for the actual image in the sky (skybox). this will prevent you from seeing underneath tho
-    const intensityScene = scene as unknown as {
-      backgroundIntensity: number;
-      environmentIntensity: number;
-    };
-    intensityScene.backgroundIntensity = 1.0;
-    intensityScene.environmentIntensity = 0.12;
     invalidate();
   }, [hdrTexture, scene, invalidate]);
 
   useEffect(() => {
-    const fogColor = new THREE.Color(FOG_COLOR);
-    scene.fog = new THREE.Fog(fogColor, FOG_NEAR, FOG_FAR);
+    const intensityScene = scene as unknown as {
+      backgroundIntensity: number;
+      environmentIntensity: number;
+    };
+    intensityScene.backgroundIntensity = envCtl.backgroundIntensity;
+    intensityScene.environmentIntensity = envCtl.environmentIntensity;
+    gl.toneMappingExposure = envCtl.exposure;
+    invalidate();
+  }, [
+    scene,
+    gl,
+    invalidate,
+    envCtl.backgroundIntensity,
+    envCtl.environmentIntensity,
+    envCtl.exposure,
+  ]);
+
+  useEffect(() => {
+    scene.fog = fogCtl.enabled
+      ? new THREE.Fog(new THREE.Color(fogCtl.color), fogCtl.near, fogCtl.far)
+      : null;
     invalidate();
 
     return () => {
       scene.fog = null;
     };
-  }, [scene, invalidate]);
+  }, [scene, invalidate, fogCtl.enabled, fogCtl.color, fogCtl.near, fogCtl.far]);
 
   useEffect(() => {
     const doorMesh = doorMeshRef.current;
@@ -135,7 +426,10 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
         scrub: 1,
         pin: true,
         anticipatePin: 1,
-        onUpdate: () => invalidate(),
+        onUpdate: (self) => {
+          scrollProgressRef.current = self.progress;
+          invalidate();
+        },
       },
       onUpdate: () => invalidate(),
     });
@@ -197,40 +491,47 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
       parallaxGroupRef.current.position.y = -offset.y * PARALLAX_STRENGTH;
     }
 
-    if (Math.abs(target.x - offset.x) > 0.001 || Math.abs(target.y - offset.y) > 0.001) {
+    if (
+      cloudSpeedRef.current > 0 ||
+      Math.abs(target.x - offset.x) > 0.001 ||
+      Math.abs(target.y - offset.y) > 0.001
+    ) {
       invalidate();
     }
   });
 
   useEffect(() => {
+    cloudSpeedRef.current = cloudCtl.speed;
+  }, [cloudCtl.speed]);
+
+  useEffect(() => {
     if (!cloudsRef.current) return;
+    const applyOpacity = (mat: THREE.Material | null | undefined) => {
+      if (!mat) return;
+      mat.transparent = true;
+      (mat as THREE.Material & { opacity: number }).opacity = cloudCtl.opacity;
+      (mat as THREE.Material & { depthWrite: boolean }).depthWrite = false;
+    };
     cloudsRef.current.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       const material = child.material;
-      if (!material) return;
       if (Array.isArray(material)) {
-        material.forEach((mat) => {
-          if (!mat) return;
-          mat.transparent = true;
-          mat.opacity = 0.6;
-          mat.depthWrite = false;
-        });
-      } else if (material instanceof THREE.Material) {
-        material.transparent = true;
-        material.opacity = 0.6;
-        material.depthWrite = false;
+        material.forEach(applyOpacity);
+      } else {
+        applyOpacity(material);
       }
     });
-  }, []);
+    invalidate();
+  }, [cloudCtl.opacity, cloudCtl.visible, cloudCtl.color, cloudCtl.speed, invalidate]);
 
   return (
     <>
       <directionalLight
         ref={sunLightRef}
-        intensity={3.7}
-        position={[3, 8, 3]}
+        intensity={lightCtl.intensity}
+        position={[lightCtl.position.x, lightCtl.position.y, lightCtl.position.z]}
         castShadow
-        color="#feebeb"
+        color={lightCtl.color}
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
         shadow-bias={-0.0001}
@@ -244,27 +545,43 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
         decay={2}
         position={[0, 0.6, 1]}
       />
-      <mesh ref={setSunMesh} position={[3, 8, 3]} visible={false}>
+      <mesh
+        ref={setSunMesh}
+        position={[lightCtl.position.x, lightCtl.position.y, lightCtl.position.z]}
+        visible={false}
+      >
         <sphereGeometry args={[0.5, 16, 16]} />
         <meshBasicMaterial color="#ffffff" />
       </mesh>
-      {!hasSceneLights && <ambientLight intensity={0.35} />}
+      {!hasSceneLights && <ambientLight intensity={ambientCtl.intensity} />}
       <group ref={parallaxGroupRef}>
-        <group ref={cloudsRef} renderOrder={-1}>
-          <Clouds material={THREE.MeshLambertMaterial} position={[0, -3, 2]}>
-            <Cloud bounds={[2.5, 0.6, 1]} position={[-2.2, 0.3, 0]} seed={1} speed={0} />
-            <Cloud bounds={[2.2, 0.5, 1]} position={[1.1, 0.8, 0.2]} seed={2} speed={0} />
-            <Cloud bounds={[1.6, 0.4, 1]} position={[0.2, 0.55, -0.4]} seed={3} speed={0} />
+        <group
+          ref={cloudsRef}
+          renderOrder={-1}
+          visible={cloudCtl.visible}
+          position={[cloudCtl.position.x, cloudCtl.position.y, cloudCtl.position.z]}
+        >
+          <Clouds material={THREE.MeshLambertMaterial}>
+            <Cloud bounds={[2.5, 0.6, 1]} position={[-2.2, 0.3, 0]} seed={1} speed={cloudCtl.speed} color={cloudCtl.color} />
+            <Cloud bounds={[2.2, 0.5, 1]} position={[1.1, 0.8, 0.2]} seed={2} speed={cloudCtl.speed} color={cloudCtl.color} />
+            <Cloud bounds={[1.6, 0.4, 1]} position={[0.2, 0.55, -0.4]} seed={3} speed={cloudCtl.speed} color={cloudCtl.color} />
           </Clouds>
         </group>
         <primitive object={gltfScene} />
+        {leafData.texture && leafData.region && (
+          <FallingLeaves
+            texture={leafData.texture}
+            region={leafData.region}
+            scrollProgressRef={scrollProgressRef}
+          />
+        )}
       </group>
       <EffectComposer enableNormalPass>
         <Bloom
-          luminanceThreshold={0.8}
+          luminanceThreshold={bloomCtl.luminanceThreshold}
           luminanceSmoothing={0}
-          mipmapBlur
-          intensity={1.8}
+          mipmapBlur={bloomCtl.mipmapBlur}
+          intensity={bloomCtl.intensity}
         />
       </EffectComposer>
     </>

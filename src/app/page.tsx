@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Leva } from "leva";
 import R3FHeroScene from "./components/R3FHeroScene";
 import ScrollAnimations from "./components/ScrollAnimations";
 import ArcStroke from "./components/ArcStroke";
@@ -23,6 +24,7 @@ export default function Home() {
 
   return (
     <div>
+      <Leva titleBar={{ title: "Scene Controls" }} collapsed />
       <button
         type="button"
         onClick={() => setShowOverlay((v) => !v)}

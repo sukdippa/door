@@ -33,12 +33,26 @@
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
   box-shadow:
+    /* outer drop shadow + glow — transparent at rest so it can fade in on hover */
+    0 10px 30px rgba(9, 20, 40, 0),
+    0 0 24px rgba(91, 161, 207, 0),
     /* inner top highlight + lit-glass edge */
     inset 0 1px 0 rgba(255, 255, 255, 0.4),
     inset 0 -1px 8px rgba(91, 161, 207, 0.14);
 }
 
-/* Register button: outer drop shadow + glow appears only on hover */
+/* Register button: transition box-shadow + filter here, since .hero-reveal's
+   transition shorthand would otherwise only cover opacity/transform.
+   Higher specificity (.glass-pill.glass-button) beats .hero-reveal. */
+.glass-pill.glass-button {
+  transition:
+    opacity 0.6s ease,
+    transform 0.6s ease,
+    box-shadow 0.3s ease,
+    filter 0.3s ease;
+}
+
+/* Register button: outer drop shadow + glow fades in on hover (same layer count = animatable) */
 .glass-button:hover {
   box-shadow:
     0 10px 30px rgba(9, 20, 40, 0.35),
