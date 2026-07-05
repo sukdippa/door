@@ -52,7 +52,7 @@ export default function Home() {
             </div>
 
             <img
-              src="/mlh-badge.png"
+              src="/mlh.svg"
               alt="MLH 2027 Season Official Member"
               className="hero-reveal absolute right-4 top-0 z-100 w-[84px] sm:right-8 sm:w-[110px]"
               data-gsap="intro-image"

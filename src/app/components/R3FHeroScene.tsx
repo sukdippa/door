@@ -241,7 +241,6 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   const parallaxOffsetRef = useRef(new THREE.Vector2(0, 0));
   const sunLightRef = useRef<THREE.DirectionalLight | null>(null);
   const [sunMesh, setSunMesh] = useState<THREE.Mesh | null>(null);
-  const hdrTexture = useLoader(RGBELoader, "/industrial_sunset_puresky_4k.hdr");
 
   const doorMeshRef = useRef<THREE.Object3D | null>(null);
   const doorClosedYRef = useRef(0);
@@ -373,13 +372,6 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
 
     invalidate();
   }, [gltfScene, invalidate, cameras, camera]);
-
-  useEffect(() => {
-    hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
-    scene.environment = hdrTexture;
-    scene.background = null; //set to hdrTexture for the actual image in the sky (skybox). this will prevent you from seeing underneath tho
-    invalidate();
-  }, [hdrTexture, scene, invalidate]);
 
   useEffect(() => {
     const intensityScene = scene as unknown as {
