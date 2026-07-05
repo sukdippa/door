@@ -6,6 +6,18 @@
   --surface: #111420;
   --accent: #6df0ff;
   --accent-strong: #ff6b6b;
+
+  /* Hero palette — the single source of truth for the hero's CSS colors.
+     Change these to restyle. (The WebGL scene colors are separate; they live
+     as constants in R3FHeroScene.tsx and can't share values with CSS.) */
+  --hero-navy: #273b5e; /* frosted-glass pill tint */
+  --hero-shadow: #091428; /* glass drop-shadow base */
+  --hero-blue: #5ba1cf; /* blue glow + lit-glass edge */
+  --hero-border: #adadad; /* glass-pill border */
+  --hero-bg: #d9c1df; /* page background behind the hero */
+  --hero-load-from: #3fa9eb; /* loading overlay gradient (top) */
+  --hero-load-to: #bbceeb; /* loading overlay gradient (bottom) */
+  --hero-glow-white: rgba(255, 255, 255, 0.75); /* white text glow */
 }
 
 @theme inline {
@@ -19,26 +31,25 @@
 
 /* Design glow effects (Red Hat Display hero, per Figma) */
 .text-glow-white {
-  text-shadow: 0 0 7.7px rgba(255, 255, 255, 0.75);
+  text-shadow: 0 0 7.7px var(--hero-glow-white);
 }
 
 .text-glow-blue {
-  text-shadow: 0 0 11.9px #5ba1cf;
+  text-shadow: 0 0 11.9px var(--hero-blue);
 }
 
 /* Frosted-glass pill (navbar + Register button, per Figma) */
 .glass-pill {
-  background-color: rgba(39, 59, 94, 0.4);
-  border: 1px solid #adadad;
+  background-color: color-mix(in srgb, var(--hero-navy) 40%, transparent);
+  border: 1px solid var(--hero-border);
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
   box-shadow:
     /* outer drop shadow + glow — transparent at rest so it can fade in on hover */
-    0 10px 30px rgba(9, 20, 40, 0),
-    0 0 24px rgba(91, 161, 207, 0),
-    /* inner top highlight + lit-glass edge */
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -1px 8px rgba(91, 161, 207, 0.14);
+    0 10px 30px color-mix(in srgb, var(--hero-shadow) 0%, transparent),
+    0 0 24px color-mix(in srgb, var(--hero-blue) 0%, transparent),
+    /* lit-glass edge */
+    inset 0 -1px 8px color-mix(in srgb, var(--hero-blue) 14%, transparent);
 }
 
 /* Register button: transition box-shadow + filter here, since .hero-reveal's
@@ -55,10 +66,9 @@
 /* Register button: outer drop shadow + glow fades in on hover (same layer count = animatable) */
 .glass-button:hover {
   box-shadow:
-    0 10px 30px rgba(9, 20, 40, 0.35),
-    0 0 24px rgba(91, 161, 207, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -1px 8px rgba(91, 161, 207, 0.14);
+    0 10px 30px color-mix(in srgb, var(--hero-shadow) 35%, transparent),
+    0 0 24px color-mix(in srgb, var(--hero-blue) 20%, transparent),
+    inset 0 -1px 8px color-mix(in srgb, var(--hero-blue) 14%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -69,7 +79,7 @@
 }
 
 body {
-  background: #D9C1DF;
+  background: var(--hero-bg);
   color: var(--foreground);
   font-family: var(--font-body), sans-serif;
   min-height: 100%;
@@ -116,11 +126,6 @@ h3 {
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.6s ease, transform 0.6s ease;
-  will-change: opacity, transform;
-}
-
-.hero-reveal--welcome {
-  transition-delay: 0.15s;
 }
 
 .hero-reveal--title {
@@ -129,5 +134,5 @@ h3 {
 
 [data-hero-loaded="true"] .hero-reveal {
   opacity: 1;
-  transform: translateY(0);
+  transform: none;
 }

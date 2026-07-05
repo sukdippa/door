@@ -2,11 +2,9 @@
 
 import * as THREE from "three";
 import { useEffect, useMemo, useRef, Suspense, useState } from "react";
-import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Cloud, Clouds, useGLTF } from "@react-three/drei";
-import { EffectComposer, Bloom, GodRays } from "@react-three/postprocessing";
-import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
-import { useControls } from "leva";
+import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 
@@ -28,7 +26,55 @@ const FOG_NEAR = 3.5;
 const FOG_FAR = 15.5;
 const PARALLAX_STRENGTH = 0.22;
 const PARALLAX_LERP = 0.08;
-const MAX_LEAVES = 24; // InstancedMesh capacity; leva count slider caps at this
+const MAX_LEAVES = 24; // InstancedMesh capacity; LEAVES_CONFIG.count must stay <= this
+
+// Scene colors (WebGL canvas — separate from the CSS `--hero-*` tokens in
+// globals.css; the two systems can't share values).
+const SUN_COLOR = "#feebeb";
+const CLOUD_COLOR = "#ffffff";
+
+// Baked scene-tuning values (formerly Leva "useControls" debug panels). This is
+// the single place to retune the look; each object mirrors one old panel.
+const LEAVES_CONFIG = {
+  enabled: true,
+  count: 15,
+  fallSpeed: 0.75,
+  sway: 0.5,
+  size: 0.1,
+  spin: 2.5,
+  position: { x: 0, y: 5, z: 0 },
+};
+const FOG_CONFIG = {
+  enabled: true,
+  color: FOG_COLOR,
+  near: FOG_NEAR,
+  far: FOG_FAR,
+};
+const CLOUD_CONFIG = {
+  visible: true,
+  opacity: 0.2,
+  speed: 0,
+  color: CLOUD_COLOR,
+  position: { x: 0, y: -3, z: 2 },
+};
+const SUN_LIGHT_CONFIG = {
+  intensity: 3.7,
+  color: SUN_COLOR,
+  position: { x: 3, y: 8, z: 3 },
+};
+const AMBIENT_LIGHT_CONFIG = {
+  intensity: 0.35,
+};
+const BLOOM_CONFIG = {
+  intensity: 1.8,
+  luminanceThreshold: 0.8,
+  mipmapBlur: true,
+};
+const ENVIRONMENT_CONFIG = {
+  environmentIntensity: 0.12,
+  backgroundIntensity: 1.0,
+  exposure: 1.0,
+};
 
 type Leaf = {
   x: number;
@@ -62,15 +108,7 @@ function FallingLeaves({ texture, region, scrollProgressRef }: FallingLeavesProp
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
-  const ctl = useControls("Falling Leaves", {
-    enabled: true,
-    count: { value: 15, min: 0, max: 24, step: 1 },
-    fallSpeed: { value: 0.75, min: 0.05, max: 2, step: 0.01 },
-    sway: { value: 0.50, min: 0, max: 1, step: 0.01 },
-    size: { value: 0.10, min: 0.02, max: 0.6, step: 0.01 },
-    spin: { value: 2.50, min: 0, max: 4, step: 0.05 },
-    position: { value: { x: 0, y: 5, z: 0 }, step: 0.1 },
-  });
+  const ctl = LEAVES_CONFIG;
 
   const geometry = useMemo(() => {
     const g = new THREE.PlaneGeometry(1, 1);
@@ -239,9 +277,6 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   const parallaxGroupRef = useRef<THREE.Group | null>(null);
   const parallaxTargetRef = useRef(new THREE.Vector2(0, 0));
   const parallaxOffsetRef = useRef(new THREE.Vector2(0, 0));
-  const sunLightRef = useRef<THREE.DirectionalLight | null>(null);
-  const [sunMesh, setSunMesh] = useState<THREE.Mesh | null>(null);
-
   const doorMeshRef = useRef<THREE.Object3D | null>(null);
   const doorClosedYRef = useRef(0);
   const cameraEndPositionRef = useRef(new THREE.Vector3());
@@ -253,43 +288,13 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
     region: THREE.Box3 | null;
   }>({ texture: null, region: null });
 
-  // ---- Debug control panel (leva) ------------------------------------------
-  const fogCtl = useControls("Fog", {
-    enabled: true,
-    color: FOG_COLOR,
-    near: { value: FOG_NEAR, min: 0, max: 30, step: 0.1 },
-    far: { value: FOG_FAR, min: 0, max: 60, step: 0.1 },
-  });
-
-  const cloudCtl = useControls("Clouds", {
-    visible: true,
-    opacity: { value: 0.2, min: 0, max: 1, step: 0.01 },
-    speed: { value: 0, min: 0, max: 2, step: 0.01 },
-    color: "#ffffff",
-    position: { value: { x: 0, y: -3, z: 2 }, step: 0.1 },
-  });
-
-  const lightCtl = useControls("Sun Light", {
-    intensity: { value: 3.7, min: 0, max: 12, step: 0.1 },
-    color: "#feebeb",
-    position: { value: { x: 3, y: 8, z: 3 }, step: 0.1 },
-  });
-
-  const ambientCtl = useControls("Ambient Light", {
-    intensity: { value: 0.35, min: 0, max: 3, step: 0.01 },
-  });
-
-  const bloomCtl = useControls("Bloom", {
-    intensity: { value: 1.8, min: 0, max: 6, step: 0.1 },
-    luminanceThreshold: { value: 0.8, min: 0, max: 1, step: 0.01 },
-    mipmapBlur: true,
-  });
-
-  const envCtl = useControls("Environment", {
-    environmentIntensity: { value: 0.12, min: 0, max: 3, step: 0.01 },
-    backgroundIntensity: { value: 1.0, min: 0, max: 3, step: 0.01 },
-    exposure: { value: 1.0, min: 0, max: 3, step: 0.01 },
-  });
+  // ---- Baked scene-tuning values (see *_CONFIG constants at top of file) ----
+  const fogCtl = FOG_CONFIG;
+  const cloudCtl = CLOUD_CONFIG;
+  const lightCtl = SUN_LIGHT_CONFIG;
+  const ambientCtl = AMBIENT_LIGHT_CONFIG;
+  const bloomCtl = BLOOM_CONFIG;
+  const envCtl = ENVIRONMENT_CONFIG;
 
   useEffect(() => {
     const glbCamera = cameras[0];
@@ -519,7 +524,6 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   return (
     <>
       <directionalLight
-        ref={sunLightRef}
         intensity={lightCtl.intensity}
         position={[lightCtl.position.x, lightCtl.position.y, lightCtl.position.z]}
         castShadow
@@ -530,21 +534,6 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
         shadow-normalBias={0.005}
         shadow-radius={10}
       />
-      <pointLight
-        color="#dfdeef"
-        intensity={0}
-        distance={20}
-        decay={2}
-        position={[0, 0.6, 1]}
-      />
-      <mesh
-        ref={setSunMesh}
-        position={[lightCtl.position.x, lightCtl.position.y, lightCtl.position.z]}
-        visible={false}
-      >
-        <sphereGeometry args={[0.5, 16, 16]} />
-        <meshBasicMaterial color="#ffffff" />
-      </mesh>
       {!hasSceneLights && <ambientLight intensity={ambientCtl.intensity} />}
       <group ref={parallaxGroupRef}>
         <group

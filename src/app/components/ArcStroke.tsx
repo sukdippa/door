@@ -66,6 +66,7 @@ export default function ArcStroke({
     return (
         <svg
             viewBox="0 0 100 50"
+            preserveAspectRatio="xMidYMin meet"
             className={className}
             overflow="visible"
             aria-hidden="true"
