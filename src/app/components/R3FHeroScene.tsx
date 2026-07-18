@@ -18,11 +18,11 @@ type HeroSceneProps = {
 const CAMERA_FOV = 35;
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 100;
-const CAMERA_START_OFFSET_Z = 2.5;
+const CAMERA_START_OFFSET_Z = 3.5;
 const CAMERA_END_OFFSET_Z = 8.5;
 const HERO_SCROLL_DISTANCE = "+=460%";
 const FOG_COLOR = "#7cc3ec";
-const FOG_NEAR = 3.5;
+const FOG_NEAR = 4;
 const FOG_FAR = 15.5;
 const PARALLAX_STRENGTH = 0.22;
 const PARALLAX_LERP = 0.08;
@@ -31,7 +31,7 @@ const MAX_LEAVES = 24; // InstancedMesh capacity; LEAVES_CONFIG.count must stay 
 // Scene colors (WebGL canvas — separate from the CSS `--hero-*` tokens in
 // globals.css; the two systems can't share values).
 const SUN_COLOR = "#feebeb";
-const CLOUD_COLOR = "#ffffff";
+const CLOUD_COLOR = "#d4faff";
 
 // Baked scene-tuning values (formerly Leva "useControls" debug panels). This is
 // the single place to retune the look; each object mirrors one old panel.
@@ -52,28 +52,49 @@ const FOG_CONFIG = {
 };
 const CLOUD_CONFIG = {
   visible: true,
-  opacity: 0.2,
+  opacity: 0.1,
   speed: 0,
   color: CLOUD_COLOR,
   position: { x: 0, y: -3, z: 2 },
 };
 const SUN_LIGHT_CONFIG = {
-  intensity: 3.7,
+  intensity: 3,
   color: SUN_COLOR,
-  position: { x: 3, y: 8, z: 3 },
+  position: { x: -3.2, y: 8.5, z: 9.4 },
+  // Orthographic shadow-camera frustum: half-width (±) and far plane.
+  shadowSize: 5,
+  shadowFar: 50,
 };
 const AMBIENT_LIGHT_CONFIG = {
-  intensity: 0.35,
+  intensity: 1,
+};
+// Dim front fill spotlight — lights the front-facing foliage the sun rakes
+// past. No shadows (fill only). decay 0 keeps intensity readable like the sun.
+const FRONT_SPOT_CONFIG = {
+  intensity: 0.8,
+  color: "#e8c08d",
+  position: { x: -6.5, y: -17.3, z: 4.1 },
+  angle: 1.5,
+  penumbra: 1,
+  decay: 0,
 };
 const BLOOM_CONFIG = {
-  intensity: 1.8,
+  intensity: 6,
   luminanceThreshold: 0.8,
   mipmapBlur: true,
 };
 const ENVIRONMENT_CONFIG = {
-  environmentIntensity: 0.12,
+  environmentIntensity: 1,
   backgroundIntensity: 1.0,
   exposure: 1.0,
+};
+// Mascot figures read as plastic because they're smooth + slightly metallic and
+// reflect the environment map. Matte defaults: high roughness, no metalness,
+// low env reflection. Applied to the collected mascot materials.
+const MASCOT_CONFIG = {
+  roughness: 1,
+  metalness: 0.1,
+  envMapIntensity: 0,
 };
 
 type Leaf = {
@@ -273,6 +294,13 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   const { camera, invalidate, scene, gl } = useThree();
   const { scene: gltfScene, cameras } = useGLTF(modelUrl);
   const [hasSceneLights, setHasSceneLights] = useState(false);
+  // Bumped once the traverse has collected mascot materials, so the de-plastic
+  // effect (defined earlier) re-runs against a populated set on first load.
+  const [mascotsCollected, setMascotsCollected] = useState(0);
+  const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
+  // Mascot materials collected during the GLB traverse, so the debug panel can
+  // retune their roughness/metalness/envMap live (see the "Mascots" panel).
+  const mascotMaterialsRef = useRef<Set<THREE.MeshStandardMaterial>>(new Set());
   const cloudsRef = useRef<THREE.Group | null>(null);
   const parallaxGroupRef = useRef<THREE.Group | null>(null);
   const parallaxTargetRef = useRef(new THREE.Vector2(0, 0));
@@ -293,8 +321,31 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   const cloudCtl = CLOUD_CONFIG;
   const lightCtl = SUN_LIGHT_CONFIG;
   const ambientCtl = AMBIENT_LIGHT_CONFIG;
+  const frontSpotCtl = FRONT_SPOT_CONFIG;
   const bloomCtl = BLOOM_CONFIG;
   const envCtl = ENVIRONMENT_CONFIG;
+  const mascotCtl = MASCOT_CONFIG;
+
+  // Apply the matte mascot material settings once the traverse has collected
+  // them (see MASCOT_CONFIG — fixes the plastic-looking reflections).
+  useEffect(() => {
+    mascotMaterialsRef.current.forEach((mat) => {
+      mat.roughness = mascotCtl.roughness;
+      mat.metalness = mascotCtl.metalness;
+      mat.envMapIntensity = mascotCtl.envMapIntensity;
+      mat.needsUpdate = true;
+    });
+    invalidate();
+  }, [mascotCtl.roughness, mascotCtl.metalness, mascotCtl.envMapIntensity, mascotsCollected, invalidate]);
+
+  // R3F writes the custom shadow-camera bounds but doesn't recompute the ortho
+  // projection matrix — without this the frustum stays at three's ±5 default.
+  useEffect(() => {
+    const light = dirLightRef.current;
+    if (!light) return;
+    light.shadow.camera.updateProjectionMatrix();
+    invalidate();
+  }, [lightCtl.shadowSize, lightCtl.shadowFar, invalidate]);
 
   useEffect(() => {
     const glbCamera = cameras[0];
@@ -322,6 +373,7 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
 
     let hasLight = false;
     let leafTexture: THREE.Texture | null = null;
+    mascotMaterialsRef.current.clear();
     gltfScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = true;
@@ -330,6 +382,13 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
         materials.forEach((mat) => {
           if (!(mat instanceof THREE.MeshStandardMaterial)) return;
           mat.envMapIntensity = 1;
+          // Mascot parts all carry Blender-default names (head/ears/shirt/hat/
+          // body/propeller/Material.###/PaletteMaterial###); scene props use
+          // descriptive names. Collect the mascots so the panel can de-plastic
+          // them (raise roughness, kill metalness, drop env reflections).
+          if (/head|ears|shirt|hat|body|propeller|^material\.|^palettematerial/i.test(mat.name)) {
+            mascotMaterialsRef.current.add(mat);
+          }
           // Foliage cards (grass/leaves/flowers) are exported as alphaMode BLEND,
           // which disables depth writes and sorts whole planes by centroid — so a
           // card behind can paint over one in front. Convert them to alpha-tested
@@ -374,6 +433,7 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
       }
     });
     setLeafData({ texture: leafTexture, region: hasRegion ? region : null });
+    setMascotsCollected((n) => n + 1);
 
     invalidate();
   }, [gltfScene, invalidate, cameras, camera]);
@@ -524,17 +584,32 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   return (
     <>
       <directionalLight
+        ref={dirLightRef}
         intensity={lightCtl.intensity}
         position={[lightCtl.position.x, lightCtl.position.y, lightCtl.position.z]}
         castShadow
         color={lightCtl.color}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
         shadow-bias={-0.0001}
         shadow-normalBias={0.005}
         shadow-radius={10}
+        shadow-camera-left={-lightCtl.shadowSize}
+        shadow-camera-right={lightCtl.shadowSize}
+        shadow-camera-top={lightCtl.shadowSize}
+        shadow-camera-bottom={-lightCtl.shadowSize}
+        shadow-camera-near={0.5}
+        shadow-camera-far={lightCtl.shadowFar}
       />
       {!hasSceneLights && <ambientLight intensity={ambientCtl.intensity} />}
+      <spotLight
+        intensity={frontSpotCtl.intensity}
+        color={frontSpotCtl.color}
+        position={[frontSpotCtl.position.x, frontSpotCtl.position.y, frontSpotCtl.position.z]}
+        angle={frontSpotCtl.angle}
+        penumbra={frontSpotCtl.penumbra}
+        decay={frontSpotCtl.decay}
+      />
       <group ref={parallaxGroupRef}>
         <group
           ref={cloudsRef}
