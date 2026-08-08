@@ -1,10 +1,12 @@
 "use client";
 
+import Link from "next/link";
+
 const NAV_LINKS = [
-  { label: "About", active: true },
-  { label: "Past Hackathons", active: false },
-  { label: "FAQ", active: false },
-  { label: "Contact", active: false },
+  { label: "About", href: "/", active: true },
+  { label: "Past Hackathons", href: "#", active: false },
+  { label: "FAQ", href: "/faq", active: false },
+  { label: "Contact", href: "#", active: false },
 ];
 
 const brandIconProps = {
@@ -49,15 +51,15 @@ export default function SiteNav() {
       </a>
 
       {NAV_LINKS.map((link) => (
-        <a
+        <Link
           key={link.label}
-          href="#"
+          href={link.href}
           className={`hidden whitespace-nowrap text-lg tracking-[-1px] transition-opacity hover:opacity-80 md:block ${
             link.active ? "font-bold text-glow-white" : "font-normal"
           }`}
         >
           {link.label}
-        </a>
+        </Link>
       ))}
 
       <span className="hidden whitespace-nowrap md:block">UofTHacks 13</span>

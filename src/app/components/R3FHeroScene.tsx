@@ -18,7 +18,7 @@ type HeroSceneProps = {
 const CAMERA_FOV = 35;
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 100;
-const CAMERA_START_OFFSET_Z = 3.5;
+const CAMERA_START_OFFSET_Z = 3.3;
 const CAMERA_END_OFFSET_Z = 8.5;
 const HERO_SCROLL_DISTANCE = "+=460%";
 const FOG_COLOR = "#7cc3ec";
@@ -52,7 +52,7 @@ const FOG_CONFIG = {
 };
 const CLOUD_CONFIG = {
   visible: true,
-  opacity: 0.1,
+  opacity: 0.15,
   speed: 0,
   color: CLOUD_COLOR,
   position: { x: 0, y: -3, z: 2 },
@@ -95,6 +95,14 @@ const MASCOT_CONFIG = {
   roughness: 1,
   metalness: 0.1,
   envMapIntensity: 0,
+};
+// GPU vertex-shader wind for the foliage cards (grass/leaves/flowers). Cheap:
+// one shared uTime uniform + a sin() per vertex. Sway is weighted by uv.y so
+// the base stays planted; phase is offset per-plant by world position. Gentle
+// defaults — raise strength for more movement, speed for faster gusts.
+const WIND_CONFIG = {
+  speed: 0.5,
+  strength: 0.3,
 };
 
 type Leaf = {
@@ -301,6 +309,9 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
   // Mascot materials collected during the GLB traverse, so the debug panel can
   // retune their roughness/metalness/envMap live (see the "Mascots" panel).
   const mascotMaterialsRef = useRef<Set<THREE.MeshStandardMaterial>>(new Set());
+  // Shared wind clock uniform — one object referenced by every foliage material,
+  // advanced once per frame so all cards sway off the same time base.
+  const windUniform = useMemo(() => ({ value: 0 }), []);
   const cloudsRef = useRef<THREE.Group | null>(null);
   const parallaxGroupRef = useRef<THREE.Group | null>(null);
   const parallaxTargetRef = useRef(new THREE.Vector2(0, 0));
@@ -347,6 +358,14 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
     invalidate();
   }, [lightCtl.shadowSize, lightCtl.shadowFar, invalidate]);
 
+  // Advance the shared wind clock. Gated to the hero (same as the falling
+  // leaves) so the demand loop still idles once scrolled past.
+  useFrame((state) => {
+    if (scrollProgressRef.current >= 0.92) return;
+    windUniform.value = state.clock.elapsedTime;
+    invalidate();
+  });
+
   useEffect(() => {
     const glbCamera = cameras[0];
     const endPosition = new THREE.Vector3(
@@ -389,14 +408,46 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
           if (/head|ears|shirt|hat|body|propeller|^material\.|^palettematerial/i.test(mat.name)) {
             mascotMaterialsRef.current.add(mat);
           }
-          // Foliage cards (grass/leaves/flowers) are exported as alphaMode BLEND,
-          // which disables depth writes and sorts whole planes by centroid — so a
-          // card behind can paint over one in front. Convert them to alpha-tested
-          // (alpha clip): writes depth + discards per-pixel, giving correct order.
-          if (mat.transparent && mat.map) {
-            mat.transparent = false;
-            mat.alphaTest = 0.5;
-            mat.depthWrite = true;
+          // Foliage cards (grass/leaves/flowers) are alpha-cutout: most export
+          // as alphaMode MASK (alphaTest set, transparent=false), some as BLEND
+          // (transparent=true). Match either.
+          const isFoliage = !!mat.map && (mat.transparent || mat.alphaTest > 0);
+          if (isFoliage) {
+            // BLEND sorts whole planes by centroid, so a card behind can paint
+            // over one in front. Convert to alpha clip (writes depth + per-pixel
+            // discard) for correct ordering. (MASK cards are already alpha clip.)
+            if (mat.transparent) {
+              mat.transparent = false;
+              mat.alphaTest = 0.5;
+              mat.depthWrite = true;
+            }
+            // GPU wind: displace verts by a sin() weighted by height above the
+            // mesh base, so tips sway and roots stay planted; per-plant phase
+            // from world position. Height (not uv.y) is the robust signal — the
+            // grass is one merged cluster whose UVs don't run 0→1 per blade.
+            child.geometry.computeBoundingBox();
+            const windBox = child.geometry.boundingBox;
+            const windBaseY = windBox ? windBox.min.y : 0;
+            const windSpanY = windBox ? Math.max(windBox.max.y - windBox.min.y, 1e-4) : 1;
+            mat.onBeforeCompile = (shader) => {
+              shader.uniforms.uWindTime = windUniform;
+              shader.vertexShader = shader.vertexShader
+                .replace(
+                  "#include <common>",
+                  "#include <common>\nuniform float uWindTime;"
+                )
+                .replace(
+                  "#include <begin_vertex>",
+                  `#include <begin_vertex>
+                  {
+                    vec4 windWorld = modelMatrix * vec4(transformed, 1.0);
+                    float windPhase = uWindTime * ${WIND_CONFIG.speed.toFixed(3)} + (windWorld.x + windWorld.z) * 0.7;
+                    float windWeight = clamp((position.y - ${windBaseY.toFixed(4)}) / ${windSpanY.toFixed(4)}, 0.0, 1.0);
+                    transformed.x += sin(windPhase) * ${WIND_CONFIG.strength.toFixed(3)} * windWeight;
+                    transformed.z += cos(windPhase * 0.8) * ${(WIND_CONFIG.strength * 0.5).toFixed(3)} * windWeight;
+                  }`
+                );
+            };
             mat.needsUpdate = true;
           }
           // Grab the single-leaf texture off the tree's "leaf bush" material to
@@ -436,7 +487,7 @@ function DoorSceneContent({ modelUrl, triggerId, openAngleDeg = 105 }: HeroScene
     setMascotsCollected((n) => n + 1);
 
     invalidate();
-  }, [gltfScene, invalidate, cameras, camera]);
+  }, [gltfScene, invalidate, cameras, camera, windUniform]);
 
   useEffect(() => {
     const intensityScene = scene as unknown as {
