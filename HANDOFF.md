@@ -7,24 +7,25 @@ iterating — see [§7 Porting outside Next.js](#7-porting-outside-nextjs) — t
 scenes are plain React + Three.js + GSAP and drop into any React app.
 
 There are currently **two scenes**, each self-contained in its own folder
-under `src/scenes/`:
+under `src/app/`:
 
 | Folder | Route | Model | What it does |
 |---|---|---|---|
-| `src/scenes/hero-about/` | `/` | `door2.glb` | A door that opens as you scroll, camera dollies through it. 2D overlay: nav, wordmark, date, Register button, MLH badge, an animated arc. |
-| `src/scenes/testimonials-faq/` | `/faq` | `path.glb` | Camera flies along a baked path as you scroll, through an outdoor/sky scene. |
+| `src/app/hero/` | `/` (`page.tsx` lives one level up, at `src/app/page.tsx` — a Next.js routing requirement) | `door2.glb` | A door that opens as you scroll, camera dollies through it. 2D overlay: nav, wordmark, date, Register button, MLH badge, an animated arc. |
+| `src/app/faq/` | `/faq` | `path.glb` | Camera flies along a baked path as you scroll, through an outdoor/sky scene. |
 
 Each scene folder contains everything specific to that scene: its R3F
-component, its tunable-constants file, and its `page.tsx` (the reference
-layout for how the pieces compose). The actual Next.js route files
-(`src/app/page.tsx`, `src/app/faq/page.tsx`) are one-line re-exports that
-just point at these — routing is a Next.js requirement, not part of what
-you're porting.
+component and its tunable-constants file. `src/app/page.tsx` and
+`src/app/faq/page.tsx` are the reference layouts for how the pieces compose —
+`faq/page.tsx` lives alongside its scene's other files since Next.js
+already requires it at that exact path; the home page's equivalent
+(`src/app/page.tsx`) can't live inside `src/app/hero/` for the same reason
+(routing needs it at the app root), so it imports from `./hero/` instead.
 
 Shared pieces both scenes use live in `src/app/components/`:
 `SiteNav.tsx`, `ArcStroke.tsx`, `ScrollAnimations.tsx`. `HeroLoadingOverlay.tsx`
-also has two consumers but lives under `src/scenes/hero-about/` — it's the
-hero scene's loading gate, reused as-is by the other scene for now (see the
+also has two consumers but lives under `src/app/hero/` — it's the hero
+scene's loading gate, reused as-is by the other scene for now (see the
 comment at the top of the file; it's a placeholder pending a real loading
 animation).
 
@@ -32,13 +33,12 @@ animation).
 
 ## 1. What to copy, per scene
 
-**`src/scenes/<scene>/`:**
+**`src/app/hero/` / `src/app/faq/`:**
 
 | File | Role |
 |---|---|
 | `R3FHeroScene.tsx` / `R3FPathScene.tsx` | The WebGL scene: loads the GLB, binds the baked scroll animation, clouds, lights, fog, bloom. The real renderer. |
 | `doorSceneConfig.ts` / `pathSceneConfig.ts` | Tunable constants (lighting, fog, bloom, scroll distance, etc.) — these seed a Leva debug panel (dev-only) inside the scene component; see §5. |
-| `page.tsx` | How the pieces are laid out together (the reference layout). |
 
 **Shared (`src/app/components/`):**
 
@@ -46,13 +46,14 @@ animation).
 |---|---|
 | `ScrollAnimations.tsx` | The intro reveal only (fades the black cover out, staggers the overlay in). No scroll-linked animation — that lives in each scene's `R3F*Scene.tsx`. |
 | `SiteNav.tsx` | The glass nav pill (logo, links, socials). |
-| `ArcStroke.tsx` | The self-drawing SVG arc behind the hero title (hero-about only). |
+| `ArcStroke.tsx` | The self-drawing SVG arc behind the hero title (hero page only). |
 
 **Host / glue:**
+- `src/app/page.tsx` / `src/app/faq/page.tsx` — how the pieces are laid out together (the reference layouts).
 - `src/app/globals.css` — the custom CSS classes and color tokens the components need (see §6).
 - `src/app/layout.tsx` — font wiring (see §7's fonts note, §7.1).
 
-**Assets** (`public/`): `door2.glb`, `door2-sky.hdr`, `path.glb`, `path-sky.hdr`, `logo.svg`, `nav-logo.svg`, `mlh.svg`.
+**Assets** (`public/`): `door2.glb`, `path.glb`, `path-sky.hdr`, `logo.svg`, `nav-logo.svg`, `mlh.svg`.
 
 ---
 
@@ -84,9 +85,9 @@ This is wired through a **custom event + a DOM flag**, not React state:
    - dispatches `window.dispatchEvent(new Event("hero:loaded"))`.
 3. Consumers wait on that signal:
    - **CSS** — `[data-hero-loaded="true"] .hero-reveal { opacity: 1 }` reveals the
-     nav, and (on hero-about) the logo, date, and button.
+     nav, and (on the hero page) the logo, date, and button.
    - **`ScrollAnimations`** — runs the intro timeline.
-   - **`ArcStroke`** — starts drawing the arc (hero-about only).
+   - **`ArcStroke`** — starts drawing the arc (hero page only).
 
 **Both signals must survive migration.** The event is for listeners already
 mounted when it fires; the attribute is for anything that mounts later and missed
@@ -106,7 +107,7 @@ the event. Drop either and part of the reveal silently never happens.
 Both scenes reach into their GLB **by node name**. If you re-export a model,
 preserve these or update the matching `R3F*Scene.tsx`:
 
-**`door2.glb`** (hero-about):
+**`door2.glb`** (hero):
 - **`Camera`** and **`door_inner`** — baked animation clips scrubbed together off
   scroll progress (see the long comment above `applyCameraKeyframe` in
   `R3FHeroScene.tsx` for why they share one absolute timeline instead of each
@@ -116,7 +117,7 @@ preserve these or update the matching `R3F*Scene.tsx`:
 - **`tree-leaves`** / **`tree-branch`** — bounding box defines the falling-leaves spawn volume.
 - a material matching **`/bush/i`** — its texture is reused for the falling-leaf particles.
 
-**`path.glb`** (testimonials-faq):
+**`path.glb`** (faq):
 - **`Camera`** — a baked keyframe animation IS the scroll path (position + rotation), scrubbed the same way.
 
 Both models are Draco-compressed with webp textures via `npm run
