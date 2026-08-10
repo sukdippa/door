@@ -5,7 +5,10 @@ import { gsap } from "gsap";
 
 // Intro reveal for the hero's 2D overlay. Runs once, gated on the `hero:loaded`
 // handshake fired by HeroLoadingOverlay (see HANDOFF.md). The door's scroll
-// animation lives in R3FHeroScene, not here.
+// animation — including the scroll-linked fade of this same overlay — lives
+// in R3FHeroScene, not here (a second independent ScrollTrigger on the same
+// pinned #door-hero trigger fought with R3FHeroScene's own pinning one and
+// produced a stuck-wrong progress value; see its onUpdate instead).
 export default function ScrollAnimations() {
   useLayoutEffect(() => {
     let handleHeroLoaded: (() => void) | null = null;

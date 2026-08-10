@@ -17,7 +17,7 @@ import { NodeIO } from "@gltf-transform/core";
 import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
 import draco3d from "draco3dgltf";
 
-const FILE = process.argv[2] ?? "public/door.glb";
+const FILE = process.argv[2] ?? "public/door2.glb";
 const CUTOFF = 0.5;
 
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({

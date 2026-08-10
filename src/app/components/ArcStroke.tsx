@@ -9,6 +9,10 @@ type ArcStrokeProps = {
     duration?: string;
     delay?: string;
     scale?: number;
+    // Forwarded as `data-scroll-fade` on the root <svg> — lets a caller group
+    // this into a gsap.utils.toArray('[data-scroll-fade="..."]') selection
+    // (see ScrollAnimations.tsx) without ArcStroke needing to know about it.
+    dataScrollFade?: string;
 };
 
 export default function ArcStroke({
@@ -18,6 +22,7 @@ export default function ArcStroke({
     duration = "1.8s",
     delay = "1s",
     scale = 1.35,
+    dataScrollFade,
 }: ArcStrokeProps) {
     const centerX = 50;
     const centerY = 25;
@@ -68,6 +73,7 @@ export default function ArcStroke({
             viewBox="0 0 100 50"
             preserveAspectRatio="xMidYMin meet"
             className={className}
+            data-scroll-fade={dataScrollFade}
             overflow="visible"
             aria-hidden="true"
         >

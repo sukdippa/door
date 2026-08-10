@@ -1,34 +1,58 @@
-# Hero Section — Migration Handoff
+# Migration Handoff
 
-This repo contains **one thing worth porting: the hero section** — a full-screen
-WebGL scene of a door that opens as you scroll (with a camera dolly through it),
-plus a 2D overlay (nav, wordmark, date, Register button, MLH badge, an animated
-arc), all sequenced off a load handshake.
+This repo is a **prototype**, not the final site: its only job is to work out 3D
+scroll behavior for a couple of full-screen WebGL scenes before a dev team
+rebuilds them in the real site's stack. Next.js is just a convenient shell for
+iterating — see [§7 Porting outside Next.js](#7-porting-outside-nextjs) — the
+scenes are plain React + Three.js + GSAP and drop into any React app.
 
-It's built with **React + Three.js + GSAP**. Next.js is just the shell — see
-[§10 Porting outside Next.js](#10-porting-outside-nextjs) — so it drops into any
-React app.
+There are currently **two scenes**, each self-contained in its own folder
+under `src/scenes/`:
+
+| Folder | Route | Model | What it does |
+|---|---|---|---|
+| `src/scenes/hero-about/` | `/` | `door2.glb` | A door that opens as you scroll, camera dollies through it. 2D overlay: nav, wordmark, date, Register button, MLH badge, an animated arc. |
+| `src/scenes/testimonials-faq/` | `/faq` | `path.glb` | Camera flies along a baked path as you scroll, through an outdoor/sky scene. |
+
+Each scene folder contains everything specific to that scene: its R3F
+component, its tunable-constants file, and its `page.tsx` (the reference
+layout for how the pieces compose). The actual Next.js route files
+(`src/app/page.tsx`, `src/app/faq/page.tsx`) are one-line re-exports that
+just point at these — routing is a Next.js requirement, not part of what
+you're porting.
+
+Shared pieces both scenes use live in `src/app/components/`:
+`SiteNav.tsx`, `ArcStroke.tsx`, `ScrollAnimations.tsx`. `HeroLoadingOverlay.tsx`
+also has two consumers but lives under `src/scenes/hero-about/` — it's the
+hero scene's loading gate, reused as-is by the other scene for now (see the
+comment at the top of the file; it's a placeholder pending a real loading
+animation).
 
 ---
 
-## 1. What to copy
+## 1. What to copy, per scene
 
-**Components** (`src/app/components/`):
+**`src/scenes/<scene>/`:**
 
 | File | Role |
 |---|---|
-| `R3FHeroScene.tsx` | The WebGL scene: loads the GLB, binds the door-open + camera dolly to scroll, clouds, falling leaves, lights, bloom. The real renderer. |
-| `HeroLoadingOverlay.tsx` | Loading gate. Watches asset load progress and fires the `hero:loaded` handshake (see §3). |
-| `ScrollAnimations.tsx` | The intro reveal only (fades the black cover out, staggers the overlay in). No scroll animation — that's in `R3FHeroScene`. |
+| `R3FHeroScene.tsx` / `R3FPathScene.tsx` | The WebGL scene: loads the GLB, binds the baked scroll animation, clouds, lights, fog, bloom. The real renderer. |
+| `doorSceneConfig.ts` / `pathSceneConfig.ts` | Tunable constants (lighting, fog, bloom, scroll distance, etc.) — these seed a Leva debug panel (dev-only) inside the scene component; see §5. |
+| `page.tsx` | How the pieces are laid out together (the reference layout). |
+
+**Shared (`src/app/components/`):**
+
+| File | Role |
+|---|---|
+| `ScrollAnimations.tsx` | The intro reveal only (fades the black cover out, staggers the overlay in). No scroll-linked animation — that lives in each scene's `R3F*Scene.tsx`. |
 | `SiteNav.tsx` | The glass nav pill (logo, links, socials). |
-| `ArcStroke.tsx` | The self-drawing SVG arc behind the title. |
+| `ArcStroke.tsx` | The self-drawing SVG arc behind the hero title (hero-about only). |
 
 **Host / glue:**
-- `src/app/page.tsx` — how the pieces are laid out together (the reference layout).
-- `src/app/globals.css` — the custom CSS classes and color tokens the components need (see §7).
-- `src/app/layout.tsx` — font wiring (see §8).
+- `src/app/globals.css` — the custom CSS classes and color tokens the components need (see §6).
+- `src/app/layout.tsx` — font wiring (see §7's fonts note, §7.1).
 
-**Assets** (`public/`): `door.glb`, `logo.svg`, `nav-logo.svg`, `mlh.svg`.
+**Assets** (`public/`): `door2.glb`, `door2-sky.hdr`, `path.glb`, `path-sky.hdr`, `logo.svg`, `nav-logo.svg`, `mlh.svg`.
 
 ---
 
@@ -41,28 +65,28 @@ three                        ^0.184.0
 @react-three/postprocessing  ^3.0.4
 postprocessing               ^6.37.7
 gsap                         ^3.15.0
+leva                         ^0.10.1    (dev-only tuning panel — see §5)
 ```
 
-Plus **React 19** and **Tailwind v4** (see §9). No `leva`, no `lottie` — those
-were dev-only / unused and have been removed.
+Plus **React 19** and **Tailwind v4**.
 
 ---
 
 ## 3. The load handshake (the one piece of hidden coupling)
 
-Nothing in the overlay is visible until the 3D assets finish loading. This is
-wired through a **custom event + a DOM flag**, not React state:
+Nothing in a scene's 2D overlay is visible until its 3D assets finish loading.
+This is wired through a **custom event + a DOM flag**, not React state:
 
 1. `HeroLoadingOverlay` reads load progress via drei's `useProgress()`.
 2. When loading completes it (after a 350 ms beat):
    - sets `document.documentElement.dataset.heroLoaded = "true"` (i.e.
      `<html data-hero-loaded="true">`), and
    - dispatches `window.dispatchEvent(new Event("hero:loaded"))`.
-3. Three consumers wait on that signal:
+3. Consumers wait on that signal:
    - **CSS** — `[data-hero-loaded="true"] .hero-reveal { opacity: 1 }` reveals the
-     nav, logo, date, and button.
+     nav, and (on hero-about) the logo, date, and button.
    - **`ScrollAnimations`** — runs the intro timeline.
-   - **`ArcStroke`** — starts drawing the arc.
+   - **`ArcStroke`** — starts drawing the arc (hero-about only).
 
 **Both signals must survive migration.** The event is for listeners already
 mounted when it fires; the attribute is for anything that mounts later and missed
@@ -77,56 +101,48 @@ the event. Drop either and part of the reveal silently never happens.
 
 ---
 
-## 4. The 3D model (`door.glb`) — hardcoded assumptions
+## 4. The 3D models — hardcoded assumptions
 
-The scene reaches into the GLB **by node name**. If you re-export the model,
-preserve these or update `R3FHeroScene.tsx`:
+Both scenes reach into their GLB **by node name**. If you re-export a model,
+preserve these or update the matching `R3F*Scene.tsx`:
 
-- **`door_inner`** — the mesh that rotates open. Missing → console warns and the
-  door won't animate.
-- **`tree`** and **`tree.001`** — their combined bounding box defines the volume
-  the falling leaves spawn in.
-- a material whose name matches **`/bush/i`** — its texture is reused for the
-  falling-leaf particles (keeps the art consistent).
+**`door2.glb`** (hero-about):
+- **`Camera`** and **`door_inner`** — baked animation clips scrubbed together off
+  scroll progress (see the long comment above `applyCameraKeyframe` in
+  `R3FHeroScene.tsx` for why they share one absolute timeline instead of each
+  being stretched to its own duration).
+- **`propeller_actually`** — spun at a constant rate in real time (not its own
+  baked, variable-speed clip).
+- **`tree-leaves`** / **`tree-branch`** — bounding box defines the falling-leaves spawn volume.
+- a material matching **`/bush/i`** — its texture is reused for the falling-leaf particles.
 
-The scene also uses the GLB's **embedded camera** (`cameras[0]`) as the start/end
-camera pose. `door.glb` is Draco-compressed with webp textures (rebuilt via the
-`optimize:glb` npm script + `scripts/fix-foliage-alpha.mjs`); the raw model isn't
-in the repo.
+**`path.glb`** (testimonials-faq):
+- **`Camera`** — a baked keyframe animation IS the scroll path (position + rotation), scrubbed the same way.
 
----
-
-## 5. How the scroll works
-
-`R3FHeroScene` attaches a GSAP `ScrollTrigger` to the element whose id matches its
-`triggerId` prop (`"door-hero"`), **pins** it, and scrubs the door rotation +
-camera dolly over `HERO_SCROLL_DISTANCE = "+=460%"` (defined at the top of
-`R3FHeroScene.tsx` — this constant is how far you scroll to fully open the door).
-
-The host element must be tall/positioned right:
-```jsx
-<section id="door-hero" className="relative h-screen overflow-hidden"> … </section>
-```
+Both models are Draco-compressed with webp textures via `npm run
+optimize:glb:door2` / `optimize:glb:path` (`scripts/fix-foliage-alpha.mjs`
+runs as a post-step — re-run after every Blender re-export, since Blender's
+export clobbers the compression back to full size).
 
 ---
 
-## 6. Layout & z-index stack
+## 5. Scene tuning (Leva panel, dev-only)
 
-The overlay layers over the canvas in this order (all are Tailwind arbitrary
-z-index utilities — translate to real `z-index` if you're not on Tailwind v4):
+Each scene mounts its own Leva debug panel (hidden outside `NODE_ENV=production`,
+each with its **own store** — see the comment above `useCreateStore()` in either
+`R3F*Scene.tsx` for why sharing Leva's default global store between the two
+scenes was a bug). `doorSceneConfig.ts` / `pathSceneConfig.ts` values are only
+the panel's *initial* values — drag the panel to iterate, then hit the
+"Export" folder's "Log current values" button to print a config-file-shaped
+object to the console, and copy the tuned numbers back into the `.ts` file.
 
-| Layer | z-index |
-|---|---|
-| WebGL canvas | `z-0` |
-| Arc | `z-10` |
-| Intro black cover | `z-20` |
-| Centered title / date / button | `z-30` |
-| Nav + MLH badge | `z-100` |
-| Loading overlay | `z-120` |
+None of this ships to production rendering logic — for a real migration, bake
+your final tuned numbers into constants and you can drop the `leva` dependency
+and the panel code entirely.
 
 ---
 
-## 7. Global CSS the host must provide
+## 6. Global CSS the host must provide
 
 These live in `globals.css` and the components depend on them:
 
@@ -154,55 +170,33 @@ in one place:
 ```
 
 The **WebGL scene** colors are a separate system (CSS can't reach into the
-canvas). They're named constants at the top of `R3FHeroScene.tsx`: `SUN_COLOR`,
-`CLOUD_COLOR`, `FOG_COLOR`.
+canvas) — they're the `*_SUN_LIGHT_CONFIG` / `*_FOG_CONFIG` / etc. constants in
+each scene's config file (§5).
 
 ---
 
-## 8. Fonts
+## 7. Porting outside Next.js
 
-The hero copy uses **Red Hat Display**, exposed as the CSS variable
-`--font-red-hat` and consumed via the `font-redhat` Tailwind utility. In this
-repo that variable is created by `next/font/google` in `layout.tsx`. In your app,
-provide `--font-red-hat` however you load fonts (a `@font-face`, `@fontsource/…`,
-or a Google Fonts `<link>`). If the variable is missing, text just falls back to
-the default font — no error.
+Each scene is React + Three.js + GSAP; Next contributes very little. Checklist:
 
----
+### 7.1 Fonts
+The only hard Next dependency. The hero copy uses **Red Hat Display**, exposed
+as the CSS variable `--font-red-hat` and consumed via the `font-redhat`
+Tailwind utility; in this repo that variable comes from `next/font/google` in
+`layout.tsx`. In your app, provide `--font-red-hat` however you load fonts (a
+`@font-face`, `@fontsource/…`, or a Google Fonts `<link>`). If the variable is
+missing, text just falls back to the default font — no error.
 
-## 9. Scene tuning (formerly Leva)
-
-The scene used to have a Leva debug panel; those values are now **baked into
-constants** at the top of `R3FHeroScene.tsx` so there's no dev UI to ship. Edit
-these to retune the look:
-
-| Constant | Controls |
-|---|---|
-| `LEAVES_CONFIG` | falling-leaf count / speed / sway / size / spin |
-| `FOG_CONFIG` | fog color + near/far |
-| `CLOUD_CONFIG` | cloud visibility / opacity / drift speed |
-| `SUN_LIGHT_CONFIG` | key light intensity / color / position |
-| `AMBIENT_LIGHT_CONFIG` | ambient fill intensity |
-| `BLOOM_CONFIG` | bloom intensity / threshold |
-| `ENVIRONMENT_CONFIG` | environment/background intensity + tone-mapping exposure |
-
----
-
-## 10. Porting outside Next.js
-
-The hero is React + Three.js + GSAP; Next contributes very little. Checklist:
-
-- **Fonts** — the only hard Next dependency. Re-provide `--font-red-hat` in your
-  own font setup (§8).
-- **No `next/image` / `next/link` / `next/navigation`** are used — plain `<img>`
-  and `<a>`, fully portable.
+- **No `next/image` / `next/link` / `next/navigation`** are used in the scene
+  code itself — plain `<img>` and `<a>`, fully portable. (`SiteNav.tsx` uses
+  `next/link` for in-app navigation between the two scenes — swap for your
+  router's link component, or a plain `<a>`.)
 - **Static assets** — copy `public/*` into your static dir. Vite and CRA serve
-  `public/` at the site root just like Next, so the `/door.glb`, `/logo.svg`, …
+  `public/` at the site root just like Next, so the `/door2.glb`, `/logo.svg`, …
   paths keep working.
 - **`"use client"`** directives are harmless no-ops in a plain-React bundler (keep
   or strip them).
-- **GLB loading** needs no bundler config — drei's `useGLTF` fetches it at runtime
-  (`next.config` here is empty).
+- **GLB loading** needs no bundler config — drei's `useGLTF` fetches it at runtime.
 - **React 19 is required** by `@react-three/fiber` v9 + drei v10. Upgrade if you're
   on React 18 (or pin older r3f/drei).
 - **SSR** — a plain SPA (Vite/CRA) is *simpler*; there's no server render to guard.
@@ -215,7 +209,7 @@ The hero is React + Three.js + GSAP; Next contributes very little. Checklist:
 
 ---
 
-## 11. Run locally
+## 8. Run locally
 
 ```bash
 npm install
@@ -223,5 +217,5 @@ npm run dev
 ```
 
 Open the app, let the loading overlay fade, then scroll: the door opens and the
-camera moves through it. The overlay (nav, title, date, button, arc) should
-reveal once loading completes.
+camera moves through it. Click "FAQ" in the nav for the second scene. The
+overlay (nav, title, date, button, arc) should reveal once loading completes.

@@ -7,8 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "optimize:glb": "gltf-transform optimize public/door.glb public/door.glb --compress draco --texture-compress webp --join-named false && node scripts/fix-foliage-alpha.mjs",
-    "optimize:glb:path": "gltf-transform optimize public/path.glb public/path.glb --compress draco --texture-compress webp --join-named false && node scripts/fix-foliage-alpha.mjs public/path.glb"
+    "optimize:glb:path": "gltf-transform optimize public/path.glb public/path.glb --compress draco --texture-compress webp --join-named false && node scripts/fix-foliage-alpha.mjs public/path.glb",
+    "optimize:glb:door2": "gltf-transform optimize public/door2.glb public/door2.glb --compress draco --texture-compress webp --join-named false && node scripts/fix-foliage-alpha.mjs public/door2.glb"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
