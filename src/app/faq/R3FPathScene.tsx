@@ -11,17 +11,29 @@
 
 import * as THREE from "three";
 import { useCallback, useEffect, useMemo, useRef, Suspense, useState } from "react";
-import { createPortal } from "react-dom";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { Cloud, Clouds, Environment, useGLTF } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { useControls, useCreateStore, button, LevaPanel } from "leva";
+import { useControls, useCreateStore } from "leva";
+import {
+  applyFoliageWind,
+  createScrubbableAction,
+  DevLevaPanel,
+  isFoliageMaterial,
+  scrubMixer,
+  SceneCanvas,
+  useCloudOpacity,
+  useLevaExportButton,
+  useParallaxGroup,
+  useScrollTriggerRefreshOnResize,
+} from "../components/sceneUtils";
 import {
   PATH_SCROLL_DISTANCE,
   PATH_ENVIRONMENT_MAP_CONFIG,
   PATH_SUN_LIGHTS,
+  PATH_END_LIGHT_CONFIG,
   PATH_CAMERA_FOV_CONFIG,
   PATH_FOG_CONFIG,
   PATH_BLOOM_CONFIG,
@@ -58,29 +70,34 @@ type SunLevaConfig = {
   shadowSize?: number;
   shadowFar?: number;
 };
-type CameraFovLevaConfig = { startAtProgress: number; endBoostDeg: number };
+type CameraFovLevaConfig = { startAtProgress: number; endAtProgress: number; endBoostDeg: number };
 type FogLevaConfig = { enabled: boolean; color: string; near: number; far: number };
 type BloomLevaConfig = { intensity: number; luminanceThreshold: number; mipmapBlur: boolean };
+type EndLightLevaConfig = {
+  intensity: number;
+  color: string;
+  position: Vec3;
+  distance: number;
+  decay: number;
+};
 
 type PathSceneContentProps = PathSceneProps & {
   envMap: EnvironmentMapLevaConfig;
   sunLights: SunLevaConfig[];
+  endLightCtl: EndLightLevaConfig;
   fovCtl: CameraFovLevaConfig;
   fogCtl: FogLevaConfig;
   bloomCtl: BloomLevaConfig;
 };
 
-const CAMERA_FOV = 35;
-const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 200;
-const PARALLAX_STRENGTH = 0.22;
-const PARALLAX_LERP = 0.08;
 
 function PathSceneContent({
   modelUrl,
   triggerId,
   envMap: envMapCtl,
   sunLights,
+  endLightCtl,
   fovCtl,
   fogCtl,
   bloomCtl,
@@ -93,9 +110,10 @@ function PathSceneContent({
   // advanced once per frame so all cards sway off the same time base.
   const windUniform = useMemo(() => ({ value: 0 }), []);
   const cloudsRef = useRef<THREE.Group | null>(null);
-  const parallaxGroupRef = useRef<THREE.Group | null>(null);
-  const parallaxTargetRef = useRef(new THREE.Vector2(0, 0));
-  const parallaxOffsetRef = useRef(new THREE.Vector2(0, 0));
+  const cloudSpeedRef = useRef(0);
+  // Cloud drift (if enabled) keeps invalidating the demand frameloop even
+  // once pointer-parallax has settled.
+  const parallaxGroupRef = useParallaxGroup(undefined, undefined, () => cloudSpeedRef.current > 0);
   // The GLB's baked "Camera" node/animation — its keyframed local position
   // and rotation ARE the scroll path (see pathSceneConfig.ts's comment for
   // why this replaced a hand-authored start/end lerp). Scrubbed via
@@ -111,7 +129,6 @@ function PathSceneContent({
   // widen effect below (glTF has no animated-fov channel, see
   // PATH_CAMERA_FOV_CONFIG's doc comment).
   const baseFovRef = useRef<number | null>(null);
-  const cloudSpeedRef = useRef(0);
   const scrollProgressRef = useRef(0);
 
   // Scrub the baked camera animation to `progress` (0..1 over the clip's full
@@ -125,27 +142,27 @@ function PathSceneContent({
     const mixer = mixerRef.current;
     const animatedCamera = animatedCameraRef.current;
     if (!mixer || !animatedCamera) return;
-    // LoopOnce + clampWhenFinished (see the clip setup below) pauses the
-    // action once it reaches its end, and a paused action's timeScale reads
-    // as 0 — so a *subsequent* setTime() call would compute a zero delta and
-    // freeze it wherever it last was. Un-pause before every scrub to keep it
-    // fully seekable in both directions.
-    if (cameraActionRef.current) cameraActionRef.current.paused = false;
-    mixer.setTime(progress * clipDurationRef.current);
+    scrubMixer(
+      mixer,
+      cameraActionRef.current ? [cameraActionRef.current] : [],
+      clipDurationRef.current,
+      progress
+    );
     camera.position.copy(animatedCamera.position);
     camera.quaternion.copy(animatedCamera.quaternion);
 
     const baseFov = baseFovRef.current;
     if (baseFov !== null && camera instanceof THREE.PerspectiveCamera) {
       const widenProgress = THREE.MathUtils.clamp(
-        (progress - fovCtl.startAtProgress) / Math.max(1 - fovCtl.startAtProgress, 1e-4),
+        (progress - fovCtl.startAtProgress) /
+          Math.max(fovCtl.endAtProgress - fovCtl.startAtProgress, 1e-4),
         0,
         1
       );
       camera.fov = baseFov + fovCtl.endBoostDeg * widenProgress;
       camera.updateProjectionMatrix();
     }
-  }, [camera, fovCtl.startAtProgress, fovCtl.endBoostDeg]);
+  }, [camera, fovCtl.startAtProgress, fovCtl.endAtProgress, fovCtl.endBoostDeg]);
 
   // ---- Baked scene-tuning values not exposed in the Leva panel ----
   const envCtl = PATH_ENVIRONMENT_CONFIG;
@@ -183,13 +200,7 @@ function PathSceneContent({
 
     if (animatedCamera && clip) {
       const mixer = new THREE.AnimationMixer(gltfScene);
-      const action = mixer.clipAction(clip);
-      // LoopRepeat (the default) wraps time===duration back to 0 — scrubbing
-      // to exactly scrollProgress 1 would snap the camera back to its start
-      // pose. LoopOnce + clampWhenFinished holds the last frame instead.
-      action.loop = THREE.LoopOnce;
-      action.clampWhenFinished = true;
-      action.play();
+      const action = createScrubbableAction(mixer, clip);
       mixerRef.current = mixer;
       cameraActionRef.current = action;
       clipDurationRef.current = clip.duration;
@@ -212,47 +223,8 @@ function PathSceneContent({
         materials.forEach((mat) => {
           if (!(mat instanceof THREE.MeshStandardMaterial)) return;
           mat.envMapIntensity = 1;
-          // Foliage cards (grass/flowers) are alpha-cutout: most export as
-          // alphaMode MASK (alphaTest set, transparent=false), some as BLEND
-          // (transparent=true). Match either.
-          const isFoliage = !!mat.map && (mat.transparent || mat.alphaTest > 0);
-          if (isFoliage) {
-            // BLEND sorts whole planes by centroid, so a card behind can paint
-            // over one in front. Convert to alpha clip (writes depth + per-pixel
-            // discard) for correct ordering. (MASK cards are already alpha clip.)
-            if (mat.transparent) {
-              mat.transparent = false;
-              mat.alphaTest = 0.5;
-              mat.depthWrite = true;
-            }
-            // GPU wind: displace verts by a sin() weighted by height above the
-            // mesh base, so tips sway and roots stay planted; per-plant phase
-            // from world position. Height (not uv.y) is the robust signal — the
-            // grass is one merged cluster whose UVs don't run 0→1 per blade.
-            child.geometry.computeBoundingBox();
-            const windBox = child.geometry.boundingBox;
-            const windBaseY = windBox ? windBox.min.y : 0;
-            const windSpanY = windBox ? Math.max(windBox.max.y - windBox.min.y, 1e-4) : 1;
-            mat.onBeforeCompile = (shader) => {
-              shader.uniforms.uWindTime = windUniform;
-              shader.vertexShader = shader.vertexShader
-                .replace(
-                  "#include <common>",
-                  "#include <common>\nuniform float uWindTime;"
-                )
-                .replace(
-                  "#include <begin_vertex>",
-                  `#include <begin_vertex>
-                  {
-                    vec4 windWorld = modelMatrix * vec4(transformed, 1.0);
-                    float windPhase = uWindTime * ${PATH_WIND_CONFIG.speed.toFixed(3)} + (windWorld.x + windWorld.z) * 0.7;
-                    float windWeight = clamp((position.y - ${windBaseY.toFixed(4)}) / ${windSpanY.toFixed(4)}, 0.0, 1.0);
-                    transformed.x += sin(windPhase) * ${PATH_WIND_CONFIG.strength.toFixed(3)} * windWeight;
-                    transformed.z += cos(windPhase * 0.8) * ${(PATH_WIND_CONFIG.strength * 0.5).toFixed(3)} * windWeight;
-                  }`
-                );
-            };
-            mat.needsUpdate = true;
+          if (isFoliageMaterial(mat)) {
+            applyFoliageWind(child, mat, windUniform, PATH_WIND_CONFIG);
           }
         });
       }
@@ -322,70 +294,13 @@ function PathSceneContent({
     };
   }, [triggerId, invalidate, applyCameraKeyframe]);
 
-  useEffect(() => {
-    const handleResize = () => {
-      ScrollTrigger.refresh();
-      invalidate();
-    };
-
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [invalidate]);
-
-  useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
-      const x = (event.clientX / window.innerWidth) * 2 - 1;
-      const y = (event.clientY / window.innerHeight) * 2 - 1;
-      parallaxTargetRef.current.set(x, y);
-      invalidate();
-    };
-
-    window.addEventListener("pointermove", handlePointerMove, { passive: true });
-    return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [invalidate]);
-
-  useFrame(() => {
-    const target = parallaxTargetRef.current;
-    const offset = parallaxOffsetRef.current;
-    offset.lerp(target, PARALLAX_LERP);
-
-    if (parallaxGroupRef.current) {
-      parallaxGroupRef.current.position.x = offset.x * PARALLAX_STRENGTH;
-      parallaxGroupRef.current.position.y = -offset.y * PARALLAX_STRENGTH;
-    }
-
-    if (
-      cloudSpeedRef.current > 0 ||
-      Math.abs(target.x - offset.x) > 0.001 ||
-      Math.abs(target.y - offset.y) > 0.001
-    ) {
-      invalidate();
-    }
-  });
+  useScrollTriggerRefreshOnResize();
 
   useEffect(() => {
     cloudSpeedRef.current = cloudCtl.speed;
   }, [cloudCtl.speed]);
 
-  useEffect(() => {
-    if (!cloudsRef.current) return;
-    const applyOpacity = (mat: THREE.Material | null | undefined) => {
-      if (!mat) return;
-      mat.transparent = true;
-      (mat as THREE.Material & { opacity: number }).opacity = cloudCtl.opacity;
-      (mat as THREE.Material & { depthWrite: boolean }).depthWrite = false;
-    };
-    cloudsRef.current.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      const material = child.material;
-      if (Array.isArray(material)) {
-        material.forEach(applyOpacity);
-      } else {
-        applyOpacity(material);
-      }
-    });
-    invalidate();
-  }, [cloudCtl.opacity, cloudCtl.visible, cloudCtl.color, cloudCtl.speed, invalidate]);
+  useCloudOpacity(cloudsRef, cloudCtl.opacity);
 
   return (
     <>
@@ -432,6 +347,17 @@ function PathSceneContent({
           </Clouds>
         </group>
         <primitive object={gltfScene} />
+        {/* Positioned at the "EuropeanLantern" prop near the far end of the
+            path (see PATH_END_LIGHT_CONFIG) — lives in this group, not
+            alongside the directional suns above, so it stays aligned with
+            the lantern mesh under the pointer-parallax offset. */}
+        <pointLight
+          intensity={endLightCtl.intensity}
+          color={endLightCtl.color}
+          position={[endLightCtl.position.x, endLightCtl.position.y, endLightCtl.position.z]}
+          distance={endLightCtl.distance}
+          decay={endLightCtl.decay}
+        />
       </group>
       <EffectComposer enableNormalPass>
         <Bloom
@@ -444,8 +370,6 @@ function PathSceneContent({
     </>
   );
 }
-
-const isDev = process.env.NODE_ENV !== "production";
 
 export default function R3FPathScene({ modelUrl, triggerId, className = "" }: PathSceneProps) {
   // Own Leva store — R3FHeroScene.tsx uses folder names that collide with
@@ -494,8 +418,17 @@ export default function R3FPathScene({ modelUrl, triggerId, className = "" }: Pa
     shadowFar: { value: PATH_SUN_LIGHTS[1].shadowFar ?? 60, min: 10, max: 300 },
   }, { store });
 
+  const endLightCtl: EndLightLevaConfig = useControls("End Light", {
+    intensity: { value: PATH_END_LIGHT_CONFIG.intensity, min: 0, max: 30, step: 0.5 },
+    color: PATH_END_LIGHT_CONFIG.color,
+    position: { value: PATH_END_LIGHT_CONFIG.position, step: 0.1 },
+    distance: { value: PATH_END_LIGHT_CONFIG.distance, min: 0, max: 100, step: 1 },
+    decay: { value: PATH_END_LIGHT_CONFIG.decay, min: 0, max: 5, step: 0.1 },
+  }, { store });
+
   const fovCtl = useControls("Camera FOV", {
     startAtProgress: { value: PATH_CAMERA_FOV_CONFIG.startAtProgress, min: 0, max: 1, step: 0.01 },
+    endAtProgress: { value: PATH_CAMERA_FOV_CONFIG.endAtProgress, min: 0, max: 1, step: 0.01 },
     endBoostDeg: { value: PATH_CAMERA_FOV_CONFIG.endBoostDeg, min: 0, max: 60, step: 1 },
   }, { store });
 
@@ -517,81 +450,32 @@ export default function R3FPathScene({ modelUrl, triggerId, className = "" }: Pa
     mipmapBlur: PATH_BLOOM_CONFIG.mipmapBlur,
   };
 
-  // Leva freezes a button's onClick at the render it was created in, so a
-  // callback closing directly over envMap/sunLights/etc. would keep logging
-  // that first render's (initial, unedited) values forever. Route through a
-  // ref instead — refreshed every render, read at click time — so the button
-  // always reports the latest panel state.
-  const exportSnapshotRef = useRef({ envMap, sunLights, fovCtl, fogCtl, bloomCtl });
-  exportSnapshotRef.current = { envMap, sunLights, fovCtl, fogCtl, bloomCtl };
-
-  useControls("Export", {
-    "Log current values": button(() => {
-      const snapshot = exportSnapshotRef.current;
-      console.log(
-        "pathSceneConfig.ts values:\n" +
-          JSON.stringify(
-            {
-              PATH_ENVIRONMENT_MAP_CONFIG: snapshot.envMap,
-              PATH_SUN_LIGHTS: snapshot.sunLights,
-              PATH_CAMERA_FOV_CONFIG: snapshot.fovCtl,
-              PATH_FOG_CONFIG: snapshot.fogCtl,
-              PATH_BLOOM_CONFIG: snapshot.bloomCtl,
-            },
-            null,
-            2
-          )
-      );
-    }),
-  }, { store });
-
-  // Leva doesn't portal itself, so mounting it inside the canvas wrapper below
-  // (an `absolute` + `z-0` ancestor in page.tsx, which forms its own stacking
-  // context) traps its z-index under the nav. Portal it straight to <body> so
-  // it always sits on top regardless of where this component is placed.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  useLevaExportButton(store, "pathSceneConfig.ts", {
+    PATH_ENVIRONMENT_MAP_CONFIG: envMap,
+    PATH_SUN_LIGHTS: sunLights,
+    PATH_END_LIGHT_CONFIG: endLightCtl,
+    PATH_CAMERA_FOV_CONFIG: fovCtl,
+    PATH_FOG_CONFIG: fogCtl,
+    PATH_BLOOM_CONFIG: bloomCtl,
+  });
 
   return (
     <div className={`h-full w-full ${className}`} aria-hidden="true">
-      {mounted &&
-        createPortal(
-          <LevaPanel store={store} collapsed hidden={!isDev} titleBar={{ title: "Path Scene" }} />,
-          document.body
-        )}
-      <Canvas
-        dpr={[1, 1.5]}
-        frameloop="demand"
-        shadows
-        camera={{
-          fov: CAMERA_FOV,
-          near: CAMERA_NEAR,
-          far: CAMERA_FAR,
-        }}
-        gl={{
-          antialias: true,
-          alpha: true,
-          outputColorSpace: THREE.SRGBColorSpace,
-          toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: 1.0,
-        }}
-        onCreated={({ gl }) => {
-          gl.shadowMap.enabled = true;
-          gl.shadowMap.type = THREE.VSMShadowMap;
-        }}
-      >
+      <DevLevaPanel store={store} title="Path Scene" />
+      <SceneCanvas far={CAMERA_FAR}>
         <Suspense fallback={null}>
           <PathSceneContent
             modelUrl={modelUrl}
             triggerId={triggerId}
             envMap={envMap}
             sunLights={sunLights}
+            endLightCtl={endLightCtl}
             fovCtl={fovCtl}
             fogCtl={fogCtl}
             bloomCtl={bloomCtl}
           />
         </Suspense>
-      </Canvas>
+      </SceneCanvas>
     </div>
   );
 }

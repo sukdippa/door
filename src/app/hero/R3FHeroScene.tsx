@@ -13,13 +13,24 @@
 
 import * as THREE from "three";
 import { useCallback, useEffect, useMemo, useRef, Suspense, useState } from "react";
-import { createPortal } from "react-dom";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { Cloud, Clouds, useGLTF } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { useControls, useCreateStore, button, LevaPanel } from "leva";
+import { useControls, useCreateStore } from "leva";
+import {
+  applyFoliageWind,
+  createScrubbableAction,
+  DevLevaPanel,
+  isFoliageMaterial,
+  scrubMixer,
+  SceneCanvas,
+  useCloudOpacity,
+  useLevaExportButton,
+  useParallaxGroup,
+  useScrollTriggerRefreshOnResize,
+} from "../components/sceneUtils";
 import {
   DOOR_SCROLL_DISTANCE,
   DOOR_SUN_LIGHT_CONFIG,
@@ -44,11 +55,7 @@ type HeroSceneProps = {
 
 type Vec3 = { x: number; y: number; z: number };
 
-const CAMERA_FOV = 35;
-const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 100;
-const PARALLAX_STRENGTH = 0.22;
-const PARALLAX_LERP = 0.08;
 const MAX_LEAVES = 24; // InstancedMesh capacity; DOOR_LEAVES_CONFIG.count must stay <= this
 
 // Live-tunable values, sourced from the Leva panel in R3FHeroScene below (the
@@ -325,9 +332,7 @@ function DoorSceneContent({
   // advanced once per frame so all cards sway off the same time base.
   const windUniform = useMemo(() => ({ value: 0 }), []);
   const cloudsRef = useRef<THREE.Group | null>(null);
-  const parallaxGroupRef = useRef<THREE.Group | null>(null);
-  const parallaxTargetRef = useRef(new THREE.Vector2(0, 0));
-  const parallaxOffsetRef = useRef(new THREE.Vector2(0, 0));
+  const parallaxGroupRef = useParallaxGroup();
   // The GLB's baked "Camera" (translation) and "door_inner" (rotation)
   // animations — scrubbed together off scroll progress via one shared
   // AnimationMixer, on a SHARED absolute timeline (the camera clip's own
@@ -369,13 +374,7 @@ function DoorSceneContent({
     const mixer = mixerRef.current;
     const animatedCamera = animatedCameraRef.current;
     if (!mixer || !animatedCamera) return;
-    // LoopOnce + clampWhenFinished pauses an action once it reaches its end
-    // (see the clip setup below) — and a paused action's timeScale reads as
-    // 0, so a *subsequent* setTime() call would compute a zero delta and
-    // freeze it at whatever local time it last had. Un-pausing before every
-    // scrub keeps it fully seekable in both directions.
-    scrubbedActionsRef.current.forEach((action) => { action.paused = false; });
-    mixer.setTime(progress * masterDurationRef.current);
+    scrubMixer(mixer, scrubbedActionsRef.current, masterDurationRef.current, progress);
     camera.position.copy(animatedCamera.position);
     camera.quaternion.copy(animatedCamera.quaternion);
 
@@ -453,19 +452,12 @@ function DoorSceneContent({
 
     if (animatedCamera && cameraClip && doorClip) {
       const mixer = new THREE.AnimationMixer(gltfScene);
-      scrubbedActionsRef.current = [cameraClip, doorClip].map((clip) => {
-        const action = mixer.clipAction(clip);
-        // LoopRepeat (the default) wraps time===duration back to 0 —
-        // scrubbing to exactly scrollProgress 1 would snap back to the start
-        // pose. LoopOnce + clampWhenFinished holds the last frame instead
-        // (paused is reset before every scrub — see applyCameraKeyframe).
-        // No per-clip timeScale — both actions share the camera's own
-        // duration as the timeline (set below), matching Blender.
-        action.loop = THREE.LoopOnce;
-        action.clampWhenFinished = true;
-        action.play();
-        return action;
-      });
+      // No per-clip timeScale — both actions share the camera's own duration
+      // as the timeline (set below), matching Blender (paused is reset
+      // before every scrub — see applyCameraKeyframe).
+      scrubbedActionsRef.current = [cameraClip, doorClip].map((clip) =>
+        createScrubbableAction(mixer, clip)
+      );
       mixerRef.current = mixer;
       masterDurationRef.current = cameraClip.duration;
     } else {
@@ -501,47 +493,8 @@ function DoorSceneContent({
           if (/head|ears|antlers|shirt|hat|body|propeller|^material\.|^palettematerial/i.test(mat.name)) {
             mascotMaterialsRef.current.add(mat);
           }
-          // Foliage cards (grass/leaves/flowers) are alpha-cutout: most export
-          // as alphaMode MASK (alphaTest set, transparent=false), some as BLEND
-          // (transparent=true). Match either.
-          const isFoliage = !!mat.map && (mat.transparent || mat.alphaTest > 0);
-          if (isFoliage) {
-            // BLEND sorts whole planes by centroid, so a card behind can paint
-            // over one in front. Convert to alpha clip (writes depth + per-pixel
-            // discard) for correct ordering. (MASK cards are already alpha clip.)
-            if (mat.transparent) {
-              mat.transparent = false;
-              mat.alphaTest = 0.5;
-              mat.depthWrite = true;
-            }
-            // GPU wind: displace verts by a sin() weighted by height above the
-            // mesh base, so tips sway and roots stay planted; per-plant phase
-            // from world position. Height (not uv.y) is the robust signal — the
-            // grass is one merged cluster whose UVs don't run 0→1 per blade.
-            child.geometry.computeBoundingBox();
-            const windBox = child.geometry.boundingBox;
-            const windBaseY = windBox ? windBox.min.y : 0;
-            const windSpanY = windBox ? Math.max(windBox.max.y - windBox.min.y, 1e-4) : 1;
-            mat.onBeforeCompile = (shader) => {
-              shader.uniforms.uWindTime = windUniform;
-              shader.vertexShader = shader.vertexShader
-                .replace(
-                  "#include <common>",
-                  "#include <common>\nuniform float uWindTime;"
-                )
-                .replace(
-                  "#include <begin_vertex>",
-                  `#include <begin_vertex>
-                  {
-                    vec4 windWorld = modelMatrix * vec4(transformed, 1.0);
-                    float windPhase = uWindTime * ${DOOR_WIND_CONFIG.speed.toFixed(3)} + (windWorld.x + windWorld.z) * 0.7;
-                    float windWeight = clamp((position.y - ${windBaseY.toFixed(4)}) / ${windSpanY.toFixed(4)}, 0.0, 1.0);
-                    transformed.x += sin(windPhase) * ${DOOR_WIND_CONFIG.strength.toFixed(3)} * windWeight;
-                    transformed.z += cos(windPhase * 0.8) * ${(DOOR_WIND_CONFIG.strength * 0.5).toFixed(3)} * windWeight;
-                  }`
-                );
-            };
-            mat.needsUpdate = true;
+          if (isFoliageMaterial(mat)) {
+            applyFoliageWind(child, mat, windUniform, DOOR_WIND_CONFIG);
           }
           // Grab the single-leaf texture off the tree's "leaf bush" material to
           // reuse for the falling-leaves particles (keeps the art consistent).
@@ -678,65 +631,8 @@ function DoorSceneContent({
     };
   }, [triggerId, invalidate, applyCameraKeyframe]);
 
-  useEffect(() => {
-    const handleResize = () => {
-      ScrollTrigger.refresh();
-      invalidate();
-    };
-
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [invalidate]);
-
-  useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
-      const x = (event.clientX / window.innerWidth) * 2 - 1;
-      const y = (event.clientY / window.innerHeight) * 2 - 1;
-      parallaxTargetRef.current.set(x, y);
-      invalidate();
-    };
-
-    window.addEventListener("pointermove", handlePointerMove, { passive: true });
-    return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [invalidate]);
-
-  useFrame(() => {
-    const target = parallaxTargetRef.current;
-    const offset = parallaxOffsetRef.current;
-    offset.lerp(target, PARALLAX_LERP);
-
-    if (parallaxGroupRef.current) {
-      parallaxGroupRef.current.position.x = offset.x * PARALLAX_STRENGTH;
-      parallaxGroupRef.current.position.y = -offset.y * PARALLAX_STRENGTH;
-    }
-
-    if (
-      Math.abs(target.x - offset.x) > 0.001 ||
-      Math.abs(target.y - offset.y) > 0.001
-    ) {
-      invalidate();
-    }
-  });
-
-  useEffect(() => {
-    if (!cloudsRef.current) return;
-    const applyOpacity = (mat: THREE.Material | null | undefined) => {
-      if (!mat) return;
-      mat.transparent = true;
-      (mat as THREE.Material & { opacity: number }).opacity = DOOR_CLOUD_CONFIG.opacity;
-      (mat as THREE.Material & { depthWrite: boolean }).depthWrite = false;
-    };
-    cloudsRef.current.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return;
-      const material = child.material;
-      if (Array.isArray(material)) {
-        material.forEach(applyOpacity);
-      } else {
-        applyOpacity(material);
-      }
-    });
-    invalidate();
-  }, [invalidate]);
+  useScrollTriggerRefreshOnResize();
+  useCloudOpacity(cloudsRef, DOOR_CLOUD_CONFIG.opacity);
 
   return (
     <>
@@ -801,8 +697,6 @@ function DoorSceneContent({
   );
 }
 
-const isDev = process.env.NODE_ENV !== "production";
-
 export default function R3FHeroScene({ modelUrl, triggerId, className = "" }: HeroSceneProps) {
   // Own Leva store — R3FPathScene.tsx uses folder names that collide with
   // this file's ("Fog", "Bloom", "Export"), and Leva's default store is a
@@ -863,70 +757,19 @@ export default function R3FHeroScene({ modelUrl, triggerId, className = "" }: He
     fogFarAtFullFade: { value: DOOR_FOG_BLOOM_FADE_CONFIG.fogFarAtFullFade, min: 100, max: 20000, step: 100 },
   }, { store });
 
-  // Leva freezes a button's onClick at the render it was created in, so a
-  // callback closing directly over sunCtl/etc. would keep logging that first
-  // render's (initial, unedited) values forever. Route through a ref instead
-  // — refreshed every render, read at click time — so the button always
-  // reports the latest panel state.
-  const exportSnapshotRef = useRef({ sunCtl, ambientCtl, frontSpotCtl, fogCtl, bloomCtl, fadeCtl });
-  exportSnapshotRef.current = { sunCtl, ambientCtl, frontSpotCtl, fogCtl, bloomCtl, fadeCtl };
-
-  useControls("Export", {
-    "Log current values": button(() => {
-      const snapshot = exportSnapshotRef.current;
-      console.log(
-        "doorSceneConfig.ts values:\n" +
-          JSON.stringify(
-            {
-              DOOR_SUN_LIGHT_CONFIG: snapshot.sunCtl,
-              DOOR_AMBIENT_LIGHT_CONFIG: snapshot.ambientCtl,
-              DOOR_FRONT_SPOT_CONFIG: snapshot.frontSpotCtl,
-              DOOR_FOG_CONFIG: snapshot.fogCtl,
-              DOOR_BLOOM_CONFIG: snapshot.bloomCtl,
-              DOOR_FOG_BLOOM_FADE_CONFIG: snapshot.fadeCtl,
-            },
-            null,
-            2
-          )
-      );
-    }),
-  }, { store });
-
-  // Leva doesn't portal itself, so mounting it inside the canvas wrapper below
-  // (an `absolute` + `z-0` ancestor in page.tsx, which forms its own stacking
-  // context) traps its z-index under the nav. Portal it straight to <body> so
-  // it always sits on top regardless of where this component is placed.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  useLevaExportButton(store, "doorSceneConfig.ts", {
+    DOOR_SUN_LIGHT_CONFIG: sunCtl,
+    DOOR_AMBIENT_LIGHT_CONFIG: ambientCtl,
+    DOOR_FRONT_SPOT_CONFIG: frontSpotCtl,
+    DOOR_FOG_CONFIG: fogCtl,
+    DOOR_BLOOM_CONFIG: bloomCtl,
+    DOOR_FOG_BLOOM_FADE_CONFIG: fadeCtl,
+  });
 
   return (
     <div className={`h-full w-full ${className}`} aria-hidden="true">
-      {mounted &&
-        createPortal(
-          <LevaPanel store={store} collapsed hidden={!isDev} titleBar={{ title: "Door Scene" }} />,
-          document.body
-        )}
-      <Canvas
-        dpr={[1, 1.5]}
-        frameloop="demand"
-        shadows
-        camera={{
-          fov: CAMERA_FOV,
-          near: CAMERA_NEAR,
-          far: CAMERA_FAR,
-        }}
-        gl={{
-          antialias: true,
-          alpha: true,
-          outputColorSpace: THREE.SRGBColorSpace,
-          toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: 1.0,
-        }}
-        onCreated={({ gl }) => {
-          gl.shadowMap.enabled = true;
-          gl.shadowMap.type = THREE.VSMShadowMap;
-        }}
-      >
+      <DevLevaPanel store={store} title="Door Scene" />
+      <SceneCanvas far={CAMERA_FAR}>
         <Suspense fallback={null}>
           <DoorSceneContent
             modelUrl={modelUrl}
@@ -939,7 +782,7 @@ export default function R3FHeroScene({ modelUrl, triggerId, className = "" }: He
             fadeCtl={fadeCtl}
           />
         </Suspense>
-      </Canvas>
+      </SceneCanvas>
     </div>
   );
 }

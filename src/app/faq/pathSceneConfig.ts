@@ -50,6 +50,20 @@ export const PATH_SUN_LIGHTS = [
   },
 ];
 
+// Warm point light at the "EuropeanLantern" prop near the far end of the
+// path (world position from path.glb — a direct child of the scene root,
+// same as Camera; see R3FPathScene.tsx). The camera's baked path only
+// travels as far as z≈-19.7, so this sits a bit beyond where scroll ends,
+// lighting the room/interior cluster the camera approaches but doesn't
+// fully reach.
+export const PATH_END_LIGHT_CONFIG = {
+  intensity: 8,
+  color: "#ffc691",
+  position: { x: 1.26, y: 4.67, z: -29.65 },
+  distance: 20,
+  decay: 2,
+};
+
 // path.glb has a baked-in "Camera" node with a keyframed CameraAction
 // animation (unlike door.glb's static baked camera) — R3FPathScene scrubs
 // that animation directly off scroll progress via AnimationMixer.setTime(),
@@ -59,11 +73,13 @@ export const PATH_SUN_LIGHTS = [
 // (no camera-intrinsic channel), so an animated FOV can't be authored in
 // Blender/exported — this widen-on-scroll is done here instead. Camera's own
 // baked fov (from path.glb) is the start value; the boost stays at 0 until
-// scrollProgress passes `startAtProgress`, then ramps linearly to
-// `endBoostDeg` degrees added by progress 1 — a widen at the end of the
-// path, not from the first scroll tick.
+// scrollProgress passes `startAtProgress`, ramps linearly to `endBoostDeg`
+// degrees by `endAtProgress`, then holds. startAtProgress = 60/200 and
+// endAtProgress = 70/200 — frames 60 and 70 of the baked camera clip's
+// 200-frame sequence.
 export const PATH_CAMERA_FOV_CONFIG = {
-  startAtProgress: 0.7,
+  startAtProgress: 50 / 200,
+  endAtProgress: 60 / 200,
   endBoostDeg: 15,
 };
 
