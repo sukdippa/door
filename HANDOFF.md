@@ -23,11 +23,11 @@ already requires it at that exact path; the home page's equivalent
 (routing needs it at the app root), so it imports from `./hero/` instead.
 
 Shared pieces both scenes use live in `src/app/components/`:
-`SiteNav.tsx`, `ArcStroke.tsx`, `ScrollAnimations.tsx`. `HeroLoadingOverlay.tsx`
-also has two consumers but lives under `src/app/hero/` — it's the hero
-scene's loading gate, reused as-is by the other scene for now (see the
-comment at the top of the file; it's a placeholder pending a real loading
-animation).
+`SiteNav.tsx`, `ArcStroke.tsx`, `ScrollAnimations.tsx`, and `sceneUtils.tsx`
+(R3F/Three.js helpers — see §1). `HeroLoadingOverlay.tsx` also has two
+consumers but lives under `src/app/hero/` — it's the hero scene's loading
+gate, reused as-is by the other scene for now (see the comment at the top of
+the file; it's a placeholder pending a real loading animation).
 
 ---
 
@@ -39,6 +39,7 @@ animation).
 |---|---|
 | `R3FHeroScene.tsx` / `R3FPathScene.tsx` | The WebGL scene: loads the GLB, binds the baked scroll animation, clouds, lights, fog, bloom. The real renderer. |
 | `doorSceneConfig.ts` / `pathSceneConfig.ts` | Tunable constants (lighting, fog, bloom, scroll distance, etc.) — these seed a Leva debug panel (dev-only) inside the scene component; see §5. |
+| `PortalSwirlEffect.tsx` (faq only) | A custom `postprocessing` `Effect` (radial swirl/blur + chromatic aberration + vignette + warm flash) — see §4.1. |
 
 **Shared (`src/app/components/`):**
 
@@ -47,6 +48,7 @@ animation).
 | `ScrollAnimations.tsx` | The intro reveal only (fades the black cover out, staggers the overlay in). No scroll-linked animation — that lives in each scene's `R3F*Scene.tsx`. |
 | `SiteNav.tsx` | The glass nav pill (logo, links, socials). |
 | `ArcStroke.tsx` | The self-drawing SVG arc behind the hero title (hero page only). |
+| `sceneUtils.tsx` | R3F/Three.js helpers factored out because both `R3F*Scene.tsx` files had copy-pasted them: foliage-material wind shader injection, pointer-parallax drift, cloud opacity, baked-animation clip scrubbing, the dev Leva panel + "Export" button, and the shared `<Canvas>` setup. Nothing here is scene-specific — the actual lighting/camera/animation logic stays independent per scene on purpose (see the doc comment at the top of each `R3F*Scene.tsx`). |
 
 **Host / glue:**
 - `src/app/page.tsx` / `src/app/faq/page.tsx` — how the pieces are laid out together (the reference layouts).
@@ -119,11 +121,61 @@ preserve these or update the matching `R3F*Scene.tsx`:
 
 **`path.glb`** (faq):
 - **`Camera`** — a baked keyframe animation IS the scroll path (position + rotation), scrubbed the same way.
+- **`Sun.002`** — a small sun-disc mesh (a sphere, not a light). It used to have
+  its own baked rise animation, but that clip is gone as of the latest
+  re-export (the node just sits at its risen resting position now) — the rise
+  is done in code instead, see `PATH_SUN_RISE_CONFIG` in `pathSceneConfig.ts`.
+  If you re-bake a rise animation for it in Blender again, that code path
+  should be removed in favor of scrubbing the clip (matching how `Camera` and
+  `door2.glb`'s `door_inner` are handled) rather than running both at once.
+- **`EuropeanLantern_glass_0`** / **`EuropeanLantern_metall_0`** — their shared
+  world position seeds `PATH_END_LIGHT_CONFIG`'s point light (a literal
+  lantern prop near the far end of the path).
+- **`Cube.009`** — its world position seeds `PATH_BRIDGE_FOG_CONFIG` (ground
+  fog near the bridge/water area, also near the far end).
 
 Both models are Draco-compressed with webp textures via `npm run
 optimize:glb:door2` / `optimize:glb:path` (`scripts/fix-foliage-alpha.mjs`
 runs as a post-step — re-run after every Blender re-export, since Blender's
 export clobbers the compression back to full size).
+
+**Node-name lookups are brittle across re-exports.** All of the positions
+above were read directly out of the current `path.glb` at the time they were
+wired up — if you re-export with different geometry/placement, these
+constants (and the FOV/portal/sun-rise progress windows below, which were
+tuned against the *current* baked Camera clip's length) will need re-tuning,
+not just a reload.
+
+---
+
+## 4.1 The portal-swirl effect (faq only, still a flourish — not a scene transition)
+
+`PortalSwirlEffect.tsx` is a radial-swirl/chromatic-aberration/vignette/warm-flash
+post-process, ported from a separate reference project's `DreamShader` (a
+plain-three.js scroll scene living outside this repo) into
+`@react-three/postprocessing`'s custom `Effect` API. It's driven by
+`PATH_PORTAL_CONFIG` in `pathSceneConfig.ts`: a `uProgress` uniform pulses
+0→1→0 (not a hold) across a scroll-progress window, timed to when the
+`Sun.002`/`EuropeanLantern`/mascot cluster near the far end of the path fills
+the frame.
+
+**This is currently a pure screen-space flourish, not a crossfade into a new
+scene** — there's no second scene bucketed and hidden behind it yet (compare
+to how a real portal transition would need an opacity crossfade between two
+mesh groups, the way the DreamShader reference project's `setGroupOpacity`
+works). If a destination scene gets added later past the current end of the
+path, pair the swirl's peak with an opacity crossfade timed to the same
+window, and re-bake the `Camera` clip in Blender to actually travel there —
+the camera's baked path currently ends short of that area already.
+
+The bridge/water fog (`PATH_BRIDGE_FOG_CONFIG`, rendered in
+`R3FPathScene.tsx`) is intentionally **lazy-mounted**: its cloud
+geometry/materials aren't constructed at all until scroll crosses
+`PATH_PORTAL_CONFIG.startAtProgress`, so it isn't a performance cost for
+anyone who never scrolls that far. If you add more scroll-triggered content
+near the end of the path, follow the same gate pattern (a ref + `useState`
+flip inside the `ScrollTrigger` `onUpdate`, checked against a Leva-tunable
+progress threshold) rather than mounting it for the whole scroll.
 
 ---
 
