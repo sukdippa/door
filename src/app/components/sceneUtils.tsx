@@ -129,14 +129,19 @@ export function useParallaxGroup(
 // ---- Decorative clouds ----
 
 // drei's <Cloud> material doesn't expose opacity/depthWrite as props, so it's
-// set by traversing the rendered meshes directly once mounted.
+// set by traversing the rendered meshes directly once mounted. `ready` is for
+// clouds that mount conditionally (e.g. lazy-loaded past some scroll
+// threshold) — cloudsRef itself never changes identity, so without this the
+// effect has no dependency to re-fire on once cloudsRef.current actually
+// becomes non-null; defaults to true for clouds that are always mounted.
 export function useCloudOpacity(
   cloudsRef: React.RefObject<THREE.Group | null>,
-  opacity: number
+  opacity: number,
+  ready = true
 ) {
   const { invalidate } = useThree();
   useEffect(() => {
-    if (!cloudsRef.current) return;
+    if (!ready || !cloudsRef.current) return;
     const applyOpacity = (mat: THREE.Material | null | undefined) => {
       if (!mat) return;
       mat.transparent = true;
@@ -153,10 +158,18 @@ export function useCloudOpacity(
       }
     });
     invalidate();
-  }, [cloudsRef, opacity, invalidate]);
+  }, [cloudsRef, opacity, ready, invalidate]);
 }
 
 // ---- Baked-animation scrubbing ----
+
+// A clip is matched to a node by its tracks' PropertyBinding path
+// ("NodeName.property", three.js's own track-naming convention) rather than
+// the clip's own name — Blender auto-suffixes duplicate action names
+// (".001", ...) on re-export, but the track's node reference stays stable.
+export function findClipForNode(clips: THREE.AnimationClip[], nodeName: string) {
+  return clips.find((clip) => clip.tracks.some((track) => track.name.startsWith(`${nodeName}.`))) ?? null;
+}
 
 // LoopRepeat (the default) wraps time===duration back to 0 — scrubbing to
 // exactly scrollProgress 1 would snap back to the start pose. LoopOnce +

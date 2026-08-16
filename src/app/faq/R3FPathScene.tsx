@@ -21,6 +21,7 @@ import {
   applyFoliageWind,
   createScrubbableAction,
   DevLevaPanel,
+  findClipForNode,
   isFoliageMaterial,
   scrubMixer,
   SceneCanvas,
@@ -29,17 +30,21 @@ import {
   useParallaxGroup,
   useScrollTriggerRefreshOnResize,
 } from "../components/sceneUtils";
+import PortalSwirlEffect, { PortalSwirlEffectImpl } from "./PortalSwirlEffect";
 import {
   PATH_SCROLL_DISTANCE,
   PATH_ENVIRONMENT_MAP_CONFIG,
   PATH_SUN_LIGHTS,
   PATH_END_LIGHT_CONFIG,
+  PATH_PORTAL_CONFIG,
+  PATH_SUN_RISE_CONFIG,
   PATH_CAMERA_FOV_CONFIG,
   PATH_FOG_CONFIG,
   PATH_BLOOM_CONFIG,
   PATH_ENVIRONMENT_CONFIG,
   PATH_AMBIENT_LIGHT_CONFIG,
   PATH_CLOUD_CONFIG,
+  PATH_BRIDGE_FOG_CONFIG,
   PATH_WIND_CONFIG,
 } from "./pathSceneConfig";
 
@@ -80,11 +85,15 @@ type EndLightLevaConfig = {
   distance: number;
   decay: number;
 };
+type PortalLevaConfig = { startAtProgress: number; endAtProgress: number; strength: number };
+type SunRiseLevaConfig = { startAtProgress: number; endAtProgress: number; riseOffset: number };
 
 type PathSceneContentProps = PathSceneProps & {
   envMap: EnvironmentMapLevaConfig;
   sunLights: SunLevaConfig[];
   endLightCtl: EndLightLevaConfig;
+  portalCtl: PortalLevaConfig;
+  sunRiseCtl: SunRiseLevaConfig;
   fovCtl: CameraFovLevaConfig;
   fogCtl: FogLevaConfig;
   bloomCtl: BloomLevaConfig;
@@ -98,6 +107,8 @@ function PathSceneContent({
   envMap: envMapCtl,
   sunLights,
   endLightCtl,
+  portalCtl,
+  sunRiseCtl,
   fovCtl,
   fogCtl,
   bloomCtl,
@@ -111,6 +122,14 @@ function PathSceneContent({
   const windUniform = useMemo(() => ({ value: 0 }), []);
   const cloudsRef = useRef<THREE.Group | null>(null);
   const cloudSpeedRef = useRef(0);
+  // Bridge/water fog near the far end of the path (see PATH_BRIDGE_FOG_CONFIG)
+  // — mounted only once scroll reaches the portal window (gate check in the
+  // ScrollTrigger onUpdate below) rather than for the whole scroll, so its
+  // cloud geometry/materials aren't built until the user is actually close
+  // to seeing them.
+  const bridgeFogRef = useRef<THREE.Group | null>(null);
+  const bridgeFogLoadedRef = useRef(false);
+  const [bridgeFogLoaded, setBridgeFogLoaded] = useState(false);
   // Cloud drift (if enabled) keeps invalidating the demand frameloop even
   // once pointer-parallax has settled.
   const parallaxGroupRef = useParallaxGroup(undefined, undefined, () => cloudSpeedRef.current > 0);
@@ -122,14 +141,23 @@ function PathSceneContent({
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   // Reset to unpaused before every setTime() call (see applyCameraKeyframe)
   // so scrubbing back down after reaching progress 1 doesn't get stuck.
-  const cameraActionRef = useRef<THREE.AnimationAction | null>(null);
+  const scrubbedActionsRef = useRef<THREE.AnimationAction[]>([]);
   const animatedCameraRef = useRef<THREE.Object3D | null>(null);
   const clipDurationRef = useRef(0);
   // The GLB camera's own baked fov — the start value for the scroll-driven
   // widen effect below (glTF has no animated-fov channel, see
   // PATH_CAMERA_FOV_CONFIG's doc comment).
   const baseFovRef = useRef<number | null>(null);
+  // "Sun.002" (the sun-disc mesh) — rise is driven in code, not a baked clip;
+  // see PATH_SUN_RISE_CONFIG. baseY is its current (risen) position.y,
+  // captured once the GLB loads.
+  const sunOrbRef = useRef<THREE.Object3D | null>(null);
+  const sunOrbBaseYRef = useRef<number | null>(null);
   const scrollProgressRef = useRef(0);
+  // Portal-swirl pulse (0..1..0 over PATH_PORTAL_CONFIG's window) — set here,
+  // read by the useFrame below that pushes it onto the effect's uniforms.
+  const portalProgressRef = useRef(0);
+  const portalEffectRef = useRef<PortalSwirlEffectImpl | null>(null);
 
   // Scrub the baked camera animation to `progress` (0..1 over the clip's full
   // duration) and copy its local position/rotation onto the render camera.
@@ -144,7 +172,7 @@ function PathSceneContent({
     if (!mixer || !animatedCamera) return;
     scrubMixer(
       mixer,
-      cameraActionRef.current ? [cameraActionRef.current] : [],
+      scrubbedActionsRef.current,
       clipDurationRef.current,
       progress
     );
@@ -162,7 +190,48 @@ function PathSceneContent({
       camera.fov = baseFov + fovCtl.endBoostDeg * widenProgress;
       camera.updateProjectionMatrix();
     }
-  }, [camera, fovCtl.startAtProgress, fovCtl.endAtProgress, fovCtl.endBoostDeg]);
+
+    // Portal-swirl pulse: rises then falls back to 0 across the window
+    // (mirrors scroll-scene's `Math.sin(transitionT * Math.PI)` dreamCurve)
+    // rather than holding at full strength, since there's no destination
+    // scene yet to hold the distortion open for.
+    const portalRaw = THREE.MathUtils.clamp(
+      (progress - portalCtl.startAtProgress) /
+        Math.max(portalCtl.endAtProgress - portalCtl.startAtProgress, 1e-4),
+      0,
+      1
+    );
+    portalProgressRef.current = Math.sin(portalRaw * Math.PI) * portalCtl.strength;
+
+    // Sun.002 rise — see PATH_SUN_RISE_CONFIG. Not a mixer scrub (no baked
+    // clip anymore); just an in-code lerp of the node's own position.y off
+    // scroll progress, applied directly since it's already part of the
+    // rendered gltfScene primitive (no separate copy-to-render-object step
+    // needed, unlike the camera).
+    const sunOrb = sunOrbRef.current;
+    const sunOrbBaseY = sunOrbBaseYRef.current;
+    if (sunOrb && sunOrbBaseY !== null) {
+      const riseRaw = THREE.MathUtils.clamp(
+        (progress - sunRiseCtl.startAtProgress) /
+          Math.max(sunRiseCtl.endAtProgress - sunRiseCtl.startAtProgress, 1e-4),
+        0,
+        1
+      );
+      const riseT = THREE.MathUtils.smootherstep(riseRaw, 0, 1);
+      sunOrb.position.y = sunOrbBaseY + THREE.MathUtils.lerp(sunRiseCtl.riseOffset, 0, riseT);
+    }
+  }, [
+    camera,
+    fovCtl.startAtProgress,
+    fovCtl.endAtProgress,
+    fovCtl.endBoostDeg,
+    portalCtl.startAtProgress,
+    portalCtl.endAtProgress,
+    portalCtl.strength,
+    sunRiseCtl.startAtProgress,
+    sunRiseCtl.endAtProgress,
+    sunRiseCtl.riseOffset,
+  ]);
 
   // ---- Baked scene-tuning values not exposed in the Leva panel ----
   const envCtl = PATH_ENVIRONMENT_CONFIG;
@@ -187,10 +256,23 @@ function PathSceneContent({
     invalidate();
   });
 
+  // Push the portal-swirl pulse onto the effect's uniforms. NOT gated by the
+  // same 0.92 cutoff as the wind clock above — PATH_PORTAL_CONFIG's window
+  // (0.85–1.0 by default) runs right through it and needs uTime advancing
+  // for its sin()-driven wobble the whole time it's visible.
+  useFrame((state) => {
+    const effect = portalEffectRef.current;
+    if (!effect) return;
+    effect.uniforms.get("uProgress")!.value = portalProgressRef.current;
+    if (portalProgressRef.current > 0) {
+      effect.uniforms.get("uTime")!.value = state.clock.elapsedTime;
+      invalidate();
+    }
+  });
+
   useEffect(() => {
     const animatedCamera = gltfScene.getObjectByName("Camera");
     animatedCameraRef.current = animatedCamera ?? null;
-    const clip = animations[0];
 
     if (animatedCamera instanceof THREE.PerspectiveCamera && camera instanceof THREE.PerspectiveCamera) {
       baseFovRef.current = animatedCamera.fov;
@@ -198,17 +280,29 @@ function PathSceneContent({
       camera.far = animatedCamera.far;
     }
 
-    if (animatedCamera && clip) {
+    const cameraClip = findClipForNode(animations, "Camera");
+
+    if (animatedCamera && cameraClip) {
       const mixer = new THREE.AnimationMixer(gltfScene);
-      const action = createScrubbableAction(mixer, clip);
       mixerRef.current = mixer;
-      cameraActionRef.current = action;
-      clipDurationRef.current = clip.duration;
+      scrubbedActionsRef.current = [createScrubbableAction(mixer, cameraClip)];
+      clipDurationRef.current = cameraClip.duration;
     } else {
       console.warn("path.glb: no animated \"Camera\" node found — camera won't follow a scroll path.");
       mixerRef.current = null;
-      cameraActionRef.current = null;
+      scrubbedActionsRef.current = [];
       clipDurationRef.current = 0;
+    }
+
+    // "Sun.002" (the sun-disc mesh) rise is driven in code off scroll
+    // progress, not a baked clip — see PATH_SUN_RISE_CONFIG. Its current
+    // position.y (the risen resting pose, per the latest path.glb export) is
+    // captured once here as the top of the rise.
+    const sunOrb = gltfScene.getObjectByName("Sun.002");
+    sunOrbRef.current = sunOrb ?? null;
+    sunOrbBaseYRef.current = sunOrb ? sunOrb.position.y : null;
+    if (!sunOrb) {
+      console.warn('path.glb: no "Sun.002" node found — the rising sun-disc mesh won\'t appear.');
     }
 
     camera.updateProjectionMatrix();
@@ -285,6 +379,12 @@ function PathSceneContent({
       onUpdate: (self) => {
         scrollProgressRef.current = self.progress;
         applyCameraKeyframe(self.progress);
+
+        if (!bridgeFogLoadedRef.current && self.progress >= portalCtl.startAtProgress) {
+          bridgeFogLoadedRef.current = true;
+          setBridgeFogLoaded(true);
+        }
+
         invalidate();
       },
     });
@@ -292,7 +392,7 @@ function PathSceneContent({
     return () => {
       trigger.kill();
     };
-  }, [triggerId, invalidate, applyCameraKeyframe]);
+  }, [triggerId, invalidate, applyCameraKeyframe, portalCtl.startAtProgress]);
 
   useScrollTriggerRefreshOnResize();
 
@@ -301,6 +401,7 @@ function PathSceneContent({
   }, [cloudCtl.speed]);
 
   useCloudOpacity(cloudsRef, cloudCtl.opacity);
+  useCloudOpacity(bridgeFogRef, PATH_BRIDGE_FOG_CONFIG.opacity, bridgeFogLoaded);
 
   return (
     <>
@@ -358,6 +459,29 @@ function PathSceneContent({
           distance={endLightCtl.distance}
           decay={endLightCtl.decay}
         />
+        {/* Bridge/water fog (see PATH_BRIDGE_FOG_CONFIG) — lazy-mounted once
+            scroll reaches the portal window, not for the whole scroll (see
+            bridgeFogLoaded above). Flat, low, dense puffs around "Cube.009"
+            to read as mist over water rather than sky cloud. */}
+        {bridgeFogLoaded && (
+          <group
+            ref={bridgeFogRef}
+            renderOrder={-1}
+            position={[
+              PATH_BRIDGE_FOG_CONFIG.position.x,
+              PATH_BRIDGE_FOG_CONFIG.position.y,
+              PATH_BRIDGE_FOG_CONFIG.position.z,
+            ]}
+          >
+            <Clouds material={THREE.MeshLambertMaterial}>
+              <Cloud bounds={[3, 0.35, 2.5]} position={[-7, 0.3, -6]} seed={11} speed={PATH_BRIDGE_FOG_CONFIG.speed} color={PATH_BRIDGE_FOG_CONFIG.color} />
+              <Cloud bounds={[2.5, 0.3, 2.5]} position={[6, 0.25, -5]} seed={12} speed={PATH_BRIDGE_FOG_CONFIG.speed} color={PATH_BRIDGE_FOG_CONFIG.color} />
+              <Cloud bounds={[3, 0.35, 2.5]} position={[-2, 0.35, 5]} seed={13} speed={PATH_BRIDGE_FOG_CONFIG.speed} color={PATH_BRIDGE_FOG_CONFIG.color} />
+              <Cloud bounds={[2.5, 0.3, 2.5]} position={[5, 0.3, 3]} seed={14} speed={PATH_BRIDGE_FOG_CONFIG.speed} color={PATH_BRIDGE_FOG_CONFIG.color} />
+              <Cloud bounds={[2.5, 0.3, 2.5]} position={[-6, 0.28, 2]} seed={15} speed={PATH_BRIDGE_FOG_CONFIG.speed} color={PATH_BRIDGE_FOG_CONFIG.color} />
+            </Clouds>
+          </group>
+        )}
       </group>
       <EffectComposer enableNormalPass>
         <Bloom
@@ -366,6 +490,7 @@ function PathSceneContent({
           mipmapBlur={bloomCtl.mipmapBlur}
           intensity={bloomCtl.intensity}
         />
+        <PortalSwirlEffect ref={portalEffectRef} />
       </EffectComposer>
     </>
   );
@@ -432,6 +557,18 @@ export default function R3FPathScene({ modelUrl, triggerId, className = "" }: Pa
     endBoostDeg: { value: PATH_CAMERA_FOV_CONFIG.endBoostDeg, min: 0, max: 60, step: 1 },
   }, { store });
 
+  const portalCtl: PortalLevaConfig = useControls("Portal", {
+    startAtProgress: { value: PATH_PORTAL_CONFIG.startAtProgress, min: 0, max: 1, step: 0.01 },
+    endAtProgress: { value: PATH_PORTAL_CONFIG.endAtProgress, min: 0, max: 1, step: 0.01 },
+    strength: { value: PATH_PORTAL_CONFIG.strength, min: 0, max: 2, step: 0.05 },
+  }, { store });
+
+  const sunRiseCtl: SunRiseLevaConfig = useControls("Sun Rise", {
+    startAtProgress: { value: PATH_SUN_RISE_CONFIG.startAtProgress, min: 0, max: 1, step: 0.01 },
+    endAtProgress: { value: PATH_SUN_RISE_CONFIG.endAtProgress, min: 0, max: 1, step: 0.01 },
+    riseOffset: { value: PATH_SUN_RISE_CONFIG.riseOffset, min: -20, max: 0, step: 0.5 },
+  }, { store });
+
   const fogCtl = useControls("Fog", {
     enabled: PATH_FOG_CONFIG.enabled,
     color: PATH_FOG_CONFIG.color,
@@ -454,6 +591,8 @@ export default function R3FPathScene({ modelUrl, triggerId, className = "" }: Pa
     PATH_ENVIRONMENT_MAP_CONFIG: envMap,
     PATH_SUN_LIGHTS: sunLights,
     PATH_END_LIGHT_CONFIG: endLightCtl,
+    PATH_PORTAL_CONFIG: portalCtl,
+    PATH_SUN_RISE_CONFIG: sunRiseCtl,
     PATH_CAMERA_FOV_CONFIG: fovCtl,
     PATH_FOG_CONFIG: fogCtl,
     PATH_BLOOM_CONFIG: bloomCtl,
@@ -470,6 +609,8 @@ export default function R3FPathScene({ modelUrl, triggerId, className = "" }: Pa
             envMap={envMap}
             sunLights={sunLights}
             endLightCtl={endLightCtl}
+            portalCtl={portalCtl}
+            sunRiseCtl={sunRiseCtl}
             fovCtl={fovCtl}
             fogCtl={fogCtl}
             bloomCtl={bloomCtl}

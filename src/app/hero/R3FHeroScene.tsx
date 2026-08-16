@@ -23,6 +23,7 @@ import {
   applyFoliageWind,
   createScrubbableAction,
   DevLevaPanel,
+  findClipForNode,
   isFoliageMaterial,
   scrubMixer,
   SceneCanvas,
@@ -288,14 +289,6 @@ function FallingLeaves({ texture, region, scrollProgressRef }: FallingLeavesProp
       frustumCulled={false}
     />
   );
-}
-
-// A clip is matched to a node by its tracks' PropertyBinding path
-// ("NodeName.property", three.js's own track-naming convention) rather than
-// the clip's own name — Blender auto-suffixes duplicate action names
-// (".001", ...) on re-export, but the track's node reference stays stable.
-function findClipForNode(clips: THREE.AnimationClip[], nodeName: string) {
-  return clips.find((clip) => clip.tracks.some((track) => track.name.startsWith(`${nodeName}.`))) ?? null;
 }
 
 function DoorSceneContent({
